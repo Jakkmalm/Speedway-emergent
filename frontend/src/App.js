@@ -7,7 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
 import { Badge } from './components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from './components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select';
-import { Trophy, Users, Calendar, Target, CheckCircle, Clock, Play } from 'lucide-react';
+import { Trophy, Users, Calendar, Target, CheckCircle, Clock, Play, Star, Zap, AlertTriangle, Repeat } from 'lucide-react';
 import './App.css';
 
 const API_BASE_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
@@ -17,7 +17,6 @@ function App() {
   const [teams, setTeams] = useState([]);
   const [matches, setMatches] = useState([]);
   const [currentMatch, setCurrentMatch] = useState(null);
-  const [heats, setHeats] = useState([]);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('seriespel');
 
@@ -35,16 +34,11 @@ function App() {
     venue: ''
   });
 
-  // Heat management
-  const [heatForm, setHeatForm] = useState({
-    heat_number: 1,
-    drivers: [
-      { name: '', team: '', gate: 1 },
-      { name: '', team: '', gate: 2 },
-      { name: '', team: '', gate: 3 },
-      { name: '', team: '', gate: 4 }
-    ]
-  });
+  // Heat result form
+  const [currentHeat, setCurrentHeat] = useState(null);
+  const [heatResults, setHeatResults] = useState({});
+  const [jokerRider, setJokerRider] = useState('');
+  const [jokerTeam, setJokerTeam] = useState('');
 
   // Load data on mount
   useEffect(() => {
@@ -159,7 +153,7 @@ function App() {
         body: JSON.stringify(matchForm)
       });
 
-      alert('Match skapad!');
+      alert('Match skapad med förbestämda 15 heat!');
       setMatchForm({ home_team_id: '', away_team_id: '', date: '', venue: '' });
       loadMatches();
     } catch (error) {
@@ -178,40 +172,76 @@ function App() {
     }
   };
 
-  const createHeat = async () => {
-    if (!currentMatch) return;
+  const openHeatResult = (heat) => {
+    setCurrentHeat(heat);
+    // Initialize results form
+    const initialResults = {};
+    Object.keys(heat.riders).forEach(gate => {
+      const rider = heat.riders[gate];
+      initialResults[rider.rider_id] = {
+        position: '',
+        status: 'completed'
+      };
+    });
+    setHeatResults(initialResults);
+    setJokerRider('');
+    setJokerTeam('');
+  };
+
+  const updateHeatResult = (riderId, field, value) => {
+    setHeatResults(prev => ({
+      ...prev,
+      [riderId]: {
+        ...prev[riderId],
+        [field]: value
+      }
+    }));
+  };
+
+  const submitHeatResult = async () => {
+    if (!currentHeat || !currentMatch) return;
 
     setLoading(true);
     try {
-      await apiCall(`/api/matches/${currentMatch.id}/heats`, {
-        method: 'POST',
-        body: JSON.stringify(heatForm)
-      });
+      const results = Object.keys(heatResults).map(riderId => ({
+        rider_id: riderId,
+        position: parseInt(heatResults[riderId].position) || 0,
+        status: heatResults[riderId].status
+      }));
 
-      alert('Heat skapat!');
-      setHeatForm({
-        heat_number: heatForm.heat_number + 1,
-        drivers: [
-          { name: '', team: '', gate: 1 },
-          { name: '', team: '', gate: 2 },
-          { name: '', team: '', gate: 3 },
-          { name: '', team: '', gate: 4 }
-        ]
+      const resultData = {
+        results: results,
+        joker_rider_id: jokerRider || null,
+        joker_team: jokerTeam || null
+      };
+
+      await apiCall(`/api/matches/${currentMatch.id}/heat/${currentHeat.heat_number}/result`, {
+        method: 'PUT',
+        body: JSON.stringify(resultData)
       });
 
       // Reload match data
-      const matchData = await apiCall(`/api/matches/${currentMatch.id}`);
-      setCurrentMatch(matchData);
+      const updatedMatch = await apiCall(`/api/matches/${currentMatch.id}`);
+      setCurrentMatch(updatedMatch);
+      setCurrentHeat(null);
+      alert('Heat resultat sparat!');
     } catch (error) {
-      alert('Kunde inte skapa heat: ' + error.message);
+      alert('Kunde inte spara resultat: ' + error.message);
     }
     setLoading(false);
   };
 
-  const updateDriverField = (index, field, value) => {
-    const newDrivers = [...heatForm.drivers];
-    newDrivers[index][field] = value;
-    setHeatForm({ ...heatForm, drivers: newDrivers });
+  const canUseJoker = (team) => {
+    if (!currentMatch) return false;
+    
+    const scoreDiff = Math.abs(currentMatch.home_score - currentMatch.away_score);
+    const isLosingTeam = team === 'home' ? 
+      currentMatch.home_score < currentMatch.away_score : 
+      currentMatch.away_score < currentMatch.home_score;
+    
+    const jokerUsed = team === 'home' ? currentMatch.joker_used_home : currentMatch.joker_used_away;
+    
+    return scoreDiff >= 6 && isLosingTeam && !jokerUsed;
   };
 
   const formatDate = (dateString) => {
@@ -222,6 +252,25 @@ function App() {
       hour: '2-digit',
       minute: '2-digit'
     });
+  };
+
+  const getPositionColor = (position) => {
+    switch(position) {
+      case 1: return 'bg-yellow-500 text-black';
+      case 2: return 'bg-gray-400 text-white';
+      case 3: return 'bg-amber-600 text-white';
+      case 4: return 'bg-gray-600 text-white';
+      default: return 'bg-gray-200 text-gray-700';
+    }
+  };
+
+  const getStatusBadge = (status) => {
+    switch(status) {
+      case 'completed': return <Badge className="bg-green-600">Genomförd</Badge>;
+      case 'excluded': return <Badge className="bg-red-600">Utesluten</Badge>;
+      case 'upcoming': return <Badge variant="secondary">Kommande</Badge>;
+      default: return <Badge variant="secondary">Okänd</Badge>;
+    }
   };
 
   return (
@@ -236,7 +285,7 @@ function App() {
               </div>
               <div>
                 <h1 className="text-3xl font-bold text-gray-900">Speedway Elitserien</h1>
-                <p className="text-gray-600">Digital Matchprotokoll</p>
+                <p className="text-gray-600">Professionellt Matchprotokoll</p>
               </div>
             </div>
             
@@ -420,7 +469,7 @@ function App() {
                 <Card>
                   <CardHeader>
                     <CardTitle>Skapa ny match</CardTitle>
-                    <CardDescription>Lägg till en ny match i systemet</CardDescription>
+                    <CardDescription>Lägg till en ny match med förbestämda 15 heat</CardDescription>
                   </CardHeader>
                   <CardContent>
                     <form onSubmit={createMatch} className="grid gap-4 md:grid-cols-2">
@@ -472,7 +521,7 @@ function App() {
                       </div>
                       <div className="md:col-span-2">
                         <Button type="submit" className="bg-red-600 hover:bg-red-700" disabled={loading}>
-                          {loading ? 'Skapar...' : 'Skapa match'}
+                          {loading ? 'Skapar...' : 'Skapa match med 15 heat'}
                         </Button>
                       </div>
                     </form>
@@ -485,7 +534,7 @@ function App() {
                 <CardHeader>
                   <CardTitle className="flex items-center">
                     <Calendar className="w-5 h-5 mr-2" />
-                    Kommande matcher
+                    Matcher
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
@@ -553,14 +602,20 @@ function App() {
                       {currentMatch.home_team} vs {currentMatch.away_team}
                     </CardTitle>
                     <CardDescription>
-                      {formatDate(currentMatch.date)} • {currentMatch.venue}
+                      {formatDate(currentMatch.date)} • {currentMatch.venue} • 15 Heat Program
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
                     <div className="grid grid-cols-3 gap-8 text-center">
                       <div>
-                        <div className="text-3xl font-bold text-red-600">{currentMatch.home_score}</div>
+                        <div className="text-4xl font-bold text-red-600">{currentMatch.home_score}</div>
                         <div className="text-sm text-gray-600">{currentMatch.home_team}</div>
+                        {currentMatch.joker_used_home && (
+                          <Badge className="mt-1 bg-purple-600">
+                            <Star className="w-3 h-3 mr-1" />
+                            Joker använd
+                          </Badge>
+                        )}
                       </div>
                       <div>
                         <div className="text-lg text-gray-400">-</div>
@@ -569,93 +624,190 @@ function App() {
                         </Badge>
                       </div>
                       <div>
-                        <div className="text-3xl font-bold text-blue-600">{currentMatch.away_score}</div>
+                        <div className="text-4xl font-bold text-blue-600">{currentMatch.away_score}</div>
                         <div className="text-sm text-gray-600">{currentMatch.away_team}</div>
+                        {currentMatch.joker_used_away && (
+                          <Badge className="mt-1 bg-purple-600">
+                            <Star className="w-3 h-3 mr-1" />
+                            Joker använd
+                          </Badge>
+                        )}
                       </div>
                     </div>
                   </CardContent>
                 </Card>
 
-                {/* Create Heat */}
-                {user && (
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Skapa Heat {heatForm.heat_number}</CardTitle>
-                      <CardDescription>Lägg till förare för nästa heat</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="grid gap-4 md:grid-cols-2">
-                        {heatForm.drivers.map((driver, index) => (
-                          <div key={index} className="border rounded-lg p-4">
-                            <div className="flex items-center mb-3">
-                              <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center mr-3">
-                                {driver.gate}
-                              </div>
-                              <Label className="font-semibold">Spår {driver.gate}</Label>
-                            </div>
-                            <div className="space-y-2">
-                              <Input
-                                placeholder="Förarens namn"
-                                value={driver.name}
-                                onChange={(e) => updateDriverField(index, 'name', e.target.value)}
-                              />
-                              <Input
-                                placeholder="Lag"
-                                value={driver.team}
-                                onChange={(e) => updateDriverField(index, 'team', e.target.value)}
-                              />
+                {/* Heat Program */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Heat Program</CardTitle>
+                    <CardDescription>Alla 15 förbestämda heat för matchen</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                      {currentMatch.heats?.map(heat => (
+                        <div key={heat.heat_number} className="border rounded-lg p-4 hover:bg-gray-50">
+                          <div className="flex items-center justify-between mb-3">
+                            <h4 className="font-semibold">Heat {heat.heat_number}</h4>
+                            <div className="flex items-center space-x-2">
+                              {heat.is_tactical_heat && (
+                                <Badge className="bg-orange-500">
+                                  <Zap className="w-3 h-3 mr-1" />
+                                  Taktisk
+                                </Badge>
+                              )}
+                              {getStatusBadge(heat.status)}
                             </div>
                           </div>
-                        ))}
-                      </div>
-                      <div className="mt-6">
-                        <Button onClick={createHeat} className="bg-red-600 hover:bg-red-700" disabled={loading}>
-                          {loading ? 'Skapar heat...' : 'Skapa heat'}
-                        </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-
-                {/* Heats List */}
-                {currentMatch.heats && currentMatch.heats.length > 0 && (
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Heat-resultat</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-4">
-                        {currentMatch.heats.map(heat => (
-                          <div key={heat.id} className="border rounded-lg p-4">
-                            <div className="flex items-center justify-between mb-3">
-                              <h4 className="font-semibold">Heat {heat.heat_number}</h4>
-                              <Badge variant={heat.status === 'completed' ? 'default' : 'secondary'}>
-                                {heat.status === 'completed' ? (
-                                  <><CheckCircle className="w-3 h-3 mr-1" /> Avslutad</>
-                                ) : (
-                                  <><Clock className="w-3 h-3 mr-1" /> Kommande</>
-                                )}
-                              </Badge>
-                            </div>
-                            <div className="grid grid-cols-4 gap-2 text-sm">
-                              {heat.drivers.map((driver, index) => (
-                                <div key={index} className="text-center p-2 bg-gray-50 rounded">
-                                  <div className="font-medium">{driver.name || 'TBD'}</div>
-                                  <div className="text-gray-600">{driver.team}</div>
-                                  <div className="text-xs mt-1">Spår {driver.gate}</div>
+                          
+                          <div className="grid grid-cols-2 gap-2 text-sm mb-3">
+                            {Object.keys(heat.riders).sort().map(gate => {
+                              const rider = heat.riders[gate];
+                              const result = heat.results?.find(r => r.rider_id === rider.rider_id);
+                              
+                              return (
+                                <div key={gate} className={`text-center p-2 rounded ${rider.team === 'home' ? 'bg-red-50' : 'bg-blue-50'}`}>
+                                  <div className="flex items-center justify-center space-x-1">
+                                    <span className="w-5 h-5 bg-gray-200 rounded-full text-xs flex items-center justify-center">
+                                      {gate}
+                                    </span>
+                                    <div 
+                                      className="w-3 h-3 rounded-full" 
+                                      style={{backgroundColor: rider.helmet_color}}
+                                    ></div>
+                                  </div>
+                                  <div className="font-medium text-xs mt-1">{rider.name}</div>
+                                  {result && (
+                                    <div className="mt-1">
+                                      {result.status === 'completed' && (
+                                        <Badge className={`text-xs ${getPositionColor(result.position)}`}>
+                                          {result.position}. ({result.points}p)
+                                        </Badge>
+                                      )}
+                                      {result.status === 'excluded' && (
+                                        <Badge className="text-xs bg-red-600">
+                                          <AlertTriangle className="w-3 h-3" />
+                                        </Badge>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
-                              ))}
-                            </div>
+                              );
+                            })}
                           </div>
-                        ))}
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
+                          
+                          {user && heat.status === 'upcoming' && (
+                            <Button 
+                              onClick={() => openHeatResult(heat)} 
+                              size="sm" 
+                              className="w-full"
+                            >
+                              Registrera resultat
+                            </Button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
               </div>
             )}
           </TabsContent>
         </Tabs>
+
+        {/* Heat Result Dialog */}
+        {currentHeat && (
+          <Dialog open={!!currentHeat} onOpenChange={() => setCurrentHeat(null)}>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Heat {currentHeat.heat_number} Resultat</DialogTitle>
+                <DialogDescription>
+                  Registrera placering och status för varje förare
+                </DialogDescription>
+              </DialogHeader>
+              
+              <div className="space-y-4">
+                {Object.keys(currentHeat.riders).sort().map(gate => {
+                  const rider = currentHeat.riders[gate];
+                  return (
+                    <div key={gate} className="flex items-center space-x-4 p-3 border rounded">
+                      <div className="flex items-center space-x-2">
+                        <span className="w-6 h-6 bg-gray-200 rounded-full text-sm flex items-center justify-center">
+                          {gate}
+                        </span>
+                        <div 
+                          className="w-4 h-4 rounded-full" 
+                          style={{backgroundColor: rider.helmet_color}}
+                        ></div>
+                        <span className="font-medium">{rider.name}</span>
+                      </div>
+                      
+                      <div className="flex items-center space-x-2 flex-1">
+                        <Select 
+                          value={heatResults[rider.rider_id]?.status || 'completed'}
+                          onValueChange={(value) => updateHeatResult(rider.rider_id, 'status', value)}
+                        >
+                          <SelectTrigger className="w-32">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="completed">Genomförd</SelectItem>
+                            <SelectItem value="excluded">Utesluten</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        
+                        {heatResults[rider.rider_id]?.status === 'completed' && (
+                          <Select 
+                            value={heatResults[rider.rider_id]?.position?.toString() || ''}
+                            onValueChange={(value) => updateHeatResult(rider.rider_id, 'position', parseInt(value))}
+                          >
+                            <SelectTrigger className="w-20">
+                              <SelectValue placeholder="Pos" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="1">1:a</SelectItem>
+                              <SelectItem value="2">2:a</SelectItem>
+                              <SelectItem value="3">3:e</SelectItem>
+                              <SelectItem value="4">4:e</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        )}
+                        
+                        {(canUseJoker('home') || canUseJoker('away')) && (
+                          <Button
+                            variant={jokerRider === rider.rider_id ? "default" : "outline"}
+                            size="sm"
+                            onClick={() => {
+                              if (jokerRider === rider.rider_id) {
+                                setJokerRider('');
+                                setJokerTeam('');
+                              } else {
+                                setJokerRider(rider.rider_id);
+                                setJokerTeam(rider.team);
+                              }
+                            }}
+                          >
+                            <Star className="w-3 h-3 mr-1" />
+                            Joker
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                
+                <div className="flex justify-end space-x-2 pt-4">
+                  <Button variant="outline" onClick={() => setCurrentHeat(null)}>
+                    Avbryt
+                  </Button>
+                  <Button onClick={submitHeatResult} disabled={loading}>
+                    {loading ? 'Sparar...' : 'Spara resultat'}
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+        )}
       </main>
     </div>
   );
