@@ -7,7 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
 import { Badge } from './components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from './components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select';
-import { Trophy, Users, Calendar, Target, CheckCircle, Clock, Play, Star, Zap, AlertTriangle, Repeat } from 'lucide-react';
+import { Trophy, Users, Calendar, Target, CheckCircle, Clock, Play, Star, Zap, AlertTriangle, Repeat, Edit, Save, X } from 'lucide-react';
 import './App.css';
 
 const API_BASE_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
@@ -16,6 +16,7 @@ function App() {
   const [user, setUser] = useState(null);
   const [teams, setTeams] = useState([]);
   const [matches, setMatches] = useState([]);
+  const [userMatches, setUserMatches] = useState([]);
   const [currentMatch, setCurrentMatch] = useState(null);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('seriespel');
@@ -36,9 +37,14 @@ function App() {
 
   // Heat result form
   const [currentHeat, setCurrentHeat] = useState(null);
+  const [editingHeat, setEditingHeat] = useState(null);
   const [heatResults, setHeatResults] = useState({});
   const [jokerRider, setJokerRider] = useState('');
   const [jokerTeam, setJokerTeam] = useState('');
+
+  // Match confirmation
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [confirmationResult, setConfirmationResult] = useState(null);
 
   // Load data on mount
   useEffect(() => {
@@ -50,8 +56,16 @@ function App() {
     const userData = localStorage.getItem('speedway_user');
     if (token && userData) {
       setUser(JSON.parse(userData));
+      loadUserMatches();
     }
   }, []);
+
+  // Load user matches when user logs in
+  useEffect(() => {
+    if (user) {
+      loadUserMatches();
+    }
+  }, [user]);
 
   const apiCall = async (endpoint, options = {}) => {
     const token = localStorage.getItem('speedway_token');
@@ -92,6 +106,15 @@ function App() {
     }
   };
 
+  const loadUserMatches = async () => {
+    try {
+      const data = await apiCall('/api/user/matches');
+      setUserMatches(data);
+    } catch (error) {
+      console.error('Error loading user matches:', error);
+    }
+  };
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -106,6 +129,7 @@ function App() {
       setUser(response.user);
       setShowAuthDialog(false);
       setLoginForm({ username: '', password: '' });
+      loadUserMatches();
     } catch (error) {
       alert('Inloggning misslyckades: ' + error.message);
     }
@@ -126,6 +150,7 @@ function App() {
       setUser(response.user);
       setShowAuthDialog(false);
       setRegisterForm({ username: '', email: '', password: '' });
+      loadUserMatches();
     } catch (error) {
       alert('Registrering misslyckades: ' + error.message);
     }
@@ -137,6 +162,7 @@ function App() {
     localStorage.removeItem('speedway_user');
     setUser(null);
     setCurrentMatch(null);
+    setUserMatches([]);
   };
 
   const createMatch = async (e) => {
@@ -174,18 +200,39 @@ function App() {
 
   const openHeatResult = (heat) => {
     setCurrentHeat(heat);
-    // Initialize results form
+    setEditingHeat(null);
+    initializeHeatForm(heat);
+  };
+
+  const editHeatResult = (heat) => {
+    setEditingHeat(heat);
+    setCurrentHeat(heat);
+    initializeHeatForm(heat);
+  };
+
+  const initializeHeatForm = (heat) => {
     const initialResults = {};
     Object.keys(heat.riders).forEach(gate => {
       const rider = heat.riders[gate];
+      const existingResult = heat.results?.find(r => r.rider_id === rider.rider_id);
+      
       initialResults[rider.rider_id] = {
-        position: '',
-        status: 'completed'
+        position: existingResult?.position?.toString() || '',
+        status: existingResult?.status || 'completed'
       };
     });
     setHeatResults(initialResults);
-    setJokerRider('');
-    setJokerTeam('');
+    
+    // Set joker if exists
+    const jokerResult = heat.results?.find(r => r.rider_id === heat.joker_rider);
+    if (jokerResult) {
+      setJokerRider(heat.joker_rider);
+      const jokerRiderInfo = Object.values(heat.riders).find(r => r.rider_id === heat.joker_rider);
+      setJokerTeam(jokerRiderInfo?.team || '');
+    } else {
+      setJokerRider('');
+      setJokerTeam('');
+    }
   };
 
   const updateHeatResult = (riderId, field, value) => {
@@ -224,9 +271,48 @@ function App() {
       const updatedMatch = await apiCall(`/api/matches/${currentMatch.id}`);
       setCurrentMatch(updatedMatch);
       setCurrentHeat(null);
+      setEditingHeat(null);
       alert('Heat resultat sparat!');
     } catch (error) {
       alert('Kunde inte spara resultat: ' + error.message);
+    }
+    setLoading(false);
+  };
+
+  const confirmMatch = async () => {
+    if (!currentMatch) return;
+
+    setLoading(true);
+    try {
+      const response = await apiCall(`/api/matches/${currentMatch.id}/confirm`, {
+        method: 'PUT'
+      });
+
+      setConfirmationResult(response);
+      setShowConfirmDialog(true);
+      loadUserMatches();
+      
+      // Update current match status
+      const updatedMatch = await apiCall(`/api/matches/${currentMatch.id}`);
+      setCurrentMatch(updatedMatch);
+    } catch (error) {
+      alert('Kunde inte bekräfta match: ' + error.message);
+    }
+    setLoading(false);
+  };
+
+  const resolveDiscrepancy = async (userMatchId, action) => {
+    setLoading(true);
+    try {
+      await apiCall(`/api/user/matches/${userMatchId}/resolve`, {
+        method: 'PUT',
+        body: JSON.stringify({ action })
+      });
+
+      loadUserMatches();
+      alert('Konflikt löst!');
+    } catch (error) {
+      alert('Kunde inte lösa konflikt: ' + error.message);
     }
     setLoading(false);
   };
@@ -272,6 +358,19 @@ function App() {
       default: return <Badge variant="secondary">Okänd</Badge>;
     }
   };
+
+  const getRiderGateStyle = (team, gate) => {
+    // Home team: Red (gates 1,3), Blue (gates 2,4 when away)
+    // Away team: Yellow (gates 2,4), White when visible
+    if (team === 'home') {
+      return gate === '1' || gate === '3' ? 'border-l-4 border-red-600 bg-red-50' : 'border-l-4 border-blue-600 bg-blue-50';
+    } else {
+      return gate === '2' || gate === '4' ? 'border-l-4 border-yellow-500 bg-yellow-50' : 'border-l-4 border-gray-300 bg-gray-50';
+    }
+  };
+
+  const completedHeats = currentMatch ? currentMatch.heats?.filter(h => h.status === 'completed').length || 0 : 0;
+  const canConfirmMatch = completedHeats === 15;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
@@ -398,7 +497,7 @@ function App() {
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid w-full grid-cols-3 mb-8">
+          <TabsList className="grid w-full grid-cols-4 mb-8">
             <TabsTrigger value="seriespel">
               <Trophy className="w-4 h-4 mr-2" />
               Seriespel
@@ -411,6 +510,12 @@ function App() {
               <Target className="w-4 h-4 mr-2" />
               Matchprotokoll
             </TabsTrigger>
+            {user && (
+              <TabsTrigger value="mina-matcher">
+                <Users className="w-4 h-4 mr-2" />
+                Mina matcher
+              </TabsTrigger>
+            )}
           </TabsList>
 
           {/* League Standings */}
@@ -474,7 +579,7 @@ function App() {
                   <CardContent>
                     <form onSubmit={createMatch} className="grid gap-4 md:grid-cols-2">
                       <div>
-                        <Label htmlFor="home-team">Hemmalag</Label>
+                        <Label htmlFor="home-team">Hemmalag (Röd/Blå)</Label>
                         <Select value={matchForm.home_team_id} onValueChange={(value) => setMatchForm({...matchForm, home_team_id: value})}>
                           <SelectTrigger>
                             <SelectValue placeholder="Välj hemmalag" />
@@ -487,7 +592,7 @@ function App() {
                         </Select>
                       </div>
                       <div>
-                        <Label htmlFor="away-team">Bortalag</Label>
+                        <Label htmlFor="away-team">Bortalag (Gul/Vit)</Label>
                         <Select value={matchForm.away_team_id} onValueChange={(value) => setMatchForm({...matchForm, away_team_id: value})}>
                           <SelectTrigger>
                             <SelectValue placeholder="Välj bortalag" />
@@ -549,8 +654,14 @@ function App() {
                               <div className="text-lg font-semibold">
                                 {match.home_team} vs {match.away_team}
                               </div>
-                              <Badge variant={match.status === 'completed' ? 'default' : match.status === 'live' ? 'destructive' : 'secondary'}>
-                                {match.status === 'completed' ? 'Avslutad' : match.status === 'live' ? 'Live' : 'Kommande'}
+                              <Badge variant={
+                                match.status === 'confirmed' ? 'default' :
+                                match.status === 'completed' ? 'secondary' : 
+                                match.status === 'live' ? 'destructive' : 'secondary'
+                              }>
+                                {match.status === 'confirmed' ? 'Bekräftad' :
+                                 match.status === 'completed' ? 'Avslutad' : 
+                                 match.status === 'live' ? 'Live' : 'Kommande'}
                               </Badge>
                             </div>
                             <div className="text-sm text-gray-600 mt-1">
@@ -558,7 +669,7 @@ function App() {
                             </div>
                           </div>
                           <div className="flex items-center space-x-4">
-                            {match.status === 'completed' && (
+                            {(match.status === 'completed' || match.status === 'confirmed') && (
                               <div className="text-right">
                                 <div className="text-lg font-bold">
                                   {match.home_score} - {match.away_score}
@@ -598,20 +709,30 @@ function App() {
                 {/* Match Header */}
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-2xl">
-                      {currentMatch.home_team} vs {currentMatch.away_team}
+                    <CardTitle className="text-2xl flex items-center justify-between">
+                      <span>{currentMatch.home_team} vs {currentMatch.away_team}</span>
+                      {user && canConfirmMatch && currentMatch.status !== 'confirmed' && (
+                        <Button onClick={confirmMatch} className="bg-green-600 hover:bg-green-700" disabled={loading}>
+                          <CheckCircle className="w-4 h-4 mr-2" />
+                          {loading ? 'Bekräftar...' : 'Bekräfta match'}
+                        </Button>
+                      )}
                     </CardTitle>
                     <CardDescription>
-                      {formatDate(currentMatch.date)} • {currentMatch.venue} • 15 Heat Program
+                      {formatDate(currentMatch.date)} • {currentMatch.venue} • {completedHeats}/15 Heat komplett
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
                     <div className="grid grid-cols-3 gap-8 text-center">
                       <div>
                         <div className="text-4xl font-bold text-red-600">{currentMatch.home_score}</div>
-                        <div className="text-sm text-gray-600">{currentMatch.home_team}</div>
+                        <div className="text-sm text-gray-600 mb-2">{currentMatch.home_team}</div>
+                        <div className="flex justify-center space-x-1 mb-2">
+                          <div className="w-4 h-4 bg-red-600 rounded-full"></div>
+                          <div className="w-4 h-4 bg-blue-600 rounded-full"></div>
+                        </div>
                         {currentMatch.joker_used_home && (
-                          <Badge className="mt-1 bg-purple-600">
+                          <Badge className="bg-purple-600">
                             <Star className="w-3 h-3 mr-1" />
                             Joker använd
                           </Badge>
@@ -619,15 +740,19 @@ function App() {
                       </div>
                       <div>
                         <div className="text-lg text-gray-400">-</div>
-                        <Badge variant={currentMatch.status === 'live' ? 'destructive' : 'secondary'}>
-                          {currentMatch.status === 'live' ? 'Pågår' : 'Kommande'}
+                        <Badge variant={currentMatch.status === 'confirmed' ? 'default' : currentMatch.status === 'live' ? 'destructive' : 'secondary'}>
+                          {currentMatch.status === 'confirmed' ? 'Bekräftad' : currentMatch.status === 'live' ? 'Pågår' : 'Kommande'}
                         </Badge>
                       </div>
                       <div>
-                        <div className="text-4xl font-bold text-blue-600">{currentMatch.away_score}</div>
-                        <div className="text-sm text-gray-600">{currentMatch.away_team}</div>
+                        <div className="text-4xl font-bold text-yellow-600">{currentMatch.away_score}</div>
+                        <div className="text-sm text-gray-600 mb-2">{currentMatch.away_team}</div>
+                        <div className="flex justify-center space-x-1 mb-2">
+                          <div className="w-4 h-4 bg-yellow-500 rounded-full"></div>
+                          <div className="w-4 h-4 bg-white border border-gray-300 rounded-full"></div>
+                        </div>
                         {currentMatch.joker_used_away && (
-                          <Badge className="mt-1 bg-purple-600">
+                          <Badge className="bg-purple-600">
                             <Star className="w-3 h-3 mr-1" />
                             Joker använd
                           </Badge>
@@ -666,14 +791,14 @@ function App() {
                               const result = heat.results?.find(r => r.rider_id === rider.rider_id);
                               
                               return (
-                                <div key={gate} className={`text-center p-2 rounded ${rider.team === 'home' ? 'bg-red-50' : 'bg-blue-50'}`}>
+                                <div key={gate} className={`text-center p-2 rounded ${getRiderGateStyle(rider.team, gate)}`}>
                                   <div className="flex items-center justify-center space-x-1">
                                     <span className="w-5 h-5 bg-gray-200 rounded-full text-xs flex items-center justify-center">
                                       {gate}
                                     </span>
                                     <div 
-                                      className="w-3 h-3 rounded-full" 
-                                      style={{backgroundColor: rider.helmet_color}}
+                                      className="w-3 h-3 rounded-full border" 
+                                      style={{backgroundColor: rider.helmet_color, borderColor: rider.helmet_color === '#FFFFFF' ? '#ccc' : rider.helmet_color}}
                                     ></div>
                                   </div>
                                   <div className="font-medium text-xs mt-1">{rider.name}</div>
@@ -696,14 +821,29 @@ function App() {
                             })}
                           </div>
                           
-                          {user && heat.status === 'upcoming' && (
-                            <Button 
-                              onClick={() => openHeatResult(heat)} 
-                              size="sm" 
-                              className="w-full"
-                            >
-                              Registrera resultat
-                            </Button>
+                          {user && (
+                            <div className="flex space-x-2">
+                              {heat.status === 'upcoming' && (
+                                <Button 
+                                  onClick={() => openHeatResult(heat)} 
+                                  size="sm" 
+                                  className="flex-1"
+                                >
+                                  Registrera resultat
+                                </Button>
+                              )}
+                              {heat.status === 'completed' && currentMatch.status !== 'confirmed' && (
+                                <Button 
+                                  onClick={() => editHeatResult(heat)} 
+                                  size="sm" 
+                                  variant="outline"
+                                  className="flex-1"
+                                >
+                                  <Edit className="w-3 h-3 mr-1" />
+                                  Redigera
+                                </Button>
+                              )}
+                            </div>
                           )}
                         </div>
                       ))}
@@ -713,16 +853,107 @@ function App() {
               </div>
             )}
           </TabsContent>
+
+          {/* User Matches */}
+          {user && (
+            <TabsContent value="mina-matcher">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center">
+                    <Users className="w-5 h-5 mr-2" />
+                    Mina matcher
+                  </CardTitle>
+                  <CardDescription>
+                    Matcher du har fyllt i protokoll för
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-4">
+                    {userMatches.length === 0 ? (
+                      <p className="text-gray-500 text-center py-8">Du har inte fyllt i några matcher än</p>
+                    ) : (
+                      userMatches.map(userMatch => (
+                        <div key={userMatch.id} className="border rounded-lg p-4">
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center space-x-4">
+                              <div className="font-semibold">
+                                {userMatch.match_details?.home_team} vs {userMatch.match_details?.away_team}
+                              </div>
+                              <Badge variant={
+                                userMatch.status === 'validated' ? 'default' :
+                                userMatch.status === 'disputed' ? 'destructive' : 'secondary'
+                              }>
+                                {userMatch.status === 'validated' ? 'Validerad' :
+                                 userMatch.status === 'disputed' ? 'Konflikt' : 'Komplett'}
+                              </Badge>
+                            </div>
+                            <div className="text-right">
+                              <div className="font-bold">
+                                {userMatch.user_results.home_score} - {userMatch.user_results.away_score}
+                              </div>
+                              <div className="text-xs text-gray-500">
+                                {formatDate(userMatch.completed_at)}
+                              </div>
+                            </div>
+                          </div>
+                          
+                          {userMatch.discrepancies && userMatch.discrepancies.length > 0 && (
+                            <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded">
+                              <div className="flex items-center mb-2">
+                                <AlertTriangle className="w-4 h-4 text-yellow-600 mr-2" />
+                                <span className="font-medium text-yellow-800">Avvikelser upptäckta</span>
+                              </div>
+                              <div className="space-y-2 text-sm">
+                                {userMatch.discrepancies.map((disc, index) => (
+                                  <div key={index} className="flex justify-between">
+                                    <span>
+                                      {disc.type === 'home_score' ? 'Hemmalag poäng' : 'Bortalag poäng'}:
+                                    </span>
+                                    <span>
+                                      Du: {disc.user_value} | Officiellt: {disc.official_value}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="flex space-x-2 mt-3">
+                                <Button 
+                                  size="sm" 
+                                  onClick={() => resolveDiscrepancy(userMatch.id, 'accept_official')}
+                                  disabled={loading}
+                                >
+                                  Acceptera officiellt
+                                </Button>
+                                <Button 
+                                  size="sm" 
+                                  variant="outline"
+                                  onClick={() => resolveDiscrepancy(userMatch.id, 'keep_user')}
+                                  disabled={loading}
+                                >
+                                  Behåll mitt
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
         </Tabs>
 
         {/* Heat Result Dialog */}
         {currentHeat && (
-          <Dialog open={!!currentHeat} onOpenChange={() => setCurrentHeat(null)}>
+          <Dialog open={!!currentHeat} onOpenChange={() => {setCurrentHeat(null); setEditingHeat(null);}}>
             <DialogContent className="max-w-2xl">
               <DialogHeader>
-                <DialogTitle>Heat {currentHeat.heat_number} Resultat</DialogTitle>
+                <DialogTitle>
+                  {editingHeat ? 'Redigera' : 'Registrera'} Heat {currentHeat.heat_number} Resultat
+                </DialogTitle>
                 <DialogDescription>
-                  Registrera placering och status för varje förare
+                  {editingHeat ? 'Redigera placering och status för varje förare' : 'Registrera placering och status för varje förare'}
                 </DialogDescription>
               </DialogHeader>
               
@@ -730,14 +961,14 @@ function App() {
                 {Object.keys(currentHeat.riders).sort().map(gate => {
                   const rider = currentHeat.riders[gate];
                   return (
-                    <div key={gate} className="flex items-center space-x-4 p-3 border rounded">
+                    <div key={gate} className={`flex items-center space-x-4 p-3 border rounded ${getRiderGateStyle(rider.team, gate)}`}>
                       <div className="flex items-center space-x-2">
                         <span className="w-6 h-6 bg-gray-200 rounded-full text-sm flex items-center justify-center">
                           {gate}
                         </span>
                         <div 
-                          className="w-4 h-4 rounded-full" 
-                          style={{backgroundColor: rider.helmet_color}}
+                          className="w-4 h-4 rounded-full border" 
+                          style={{backgroundColor: rider.helmet_color, borderColor: rider.helmet_color === '#FFFFFF' ? '#ccc' : rider.helmet_color}}
                         ></div>
                         <span className="font-medium">{rider.name}</span>
                       </div>
@@ -797,10 +1028,12 @@ function App() {
                 })}
                 
                 <div className="flex justify-end space-x-2 pt-4">
-                  <Button variant="outline" onClick={() => setCurrentHeat(null)}>
+                  <Button variant="outline" onClick={() => {setCurrentHeat(null); setEditingHeat(null);}}>
+                    <X className="w-4 h-4 mr-2" />
                     Avbryt
                   </Button>
                   <Button onClick={submitHeatResult} disabled={loading}>
+                    <Save className="w-4 h-4 mr-2" />
                     {loading ? 'Sparar...' : 'Spara resultat'}
                   </Button>
                 </div>
@@ -808,6 +1041,38 @@ function App() {
             </DialogContent>
           </Dialog>
         )}
+
+        {/* Match Confirmation Dialog */}
+        <Dialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Match bekräftad!</DialogTitle>
+              <DialogDescription>
+                Matchen har sparats i dina matcher.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              {confirmationResult?.discrepancies && confirmationResult.discrepancies.length > 0 && (
+                <div className="p-3 bg-yellow-50 border border-yellow-200 rounded">
+                  <div className="flex items-center mb-2">
+                    <AlertTriangle className="w-4 h-4 text-yellow-600 mr-2" />
+                    <span className="font-medium text-yellow-800">
+                      Avvikelser upptäckta mot officiella resultat
+                    </span>
+                  </div>
+                  <p className="text-sm text-yellow-700">
+                    Du kan granska och rätta detta i fliken "Mina matcher".
+                  </p>
+                </div>
+              )}
+              <div className="flex justify-end">
+                <Button onClick={() => setShowConfirmDialog(false)}>
+                  OK
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
       </main>
     </div>
   );
