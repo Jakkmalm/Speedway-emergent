@@ -582,6 +582,24 @@ async def resolve_discrepancy(user_match_id: str, resolution_data: dict, user_id
     
     return {"message": "Konflikt löst"}
 
+# OFFICIAL DATA ENDPOINT.
+
+@app.put("/api/official-matches/{match_id}/mark-used")
+async def mark_match_as_used(match_id: str, user_id: str = Depends(verify_jwt_token)):
+    result = db["official_matches"].update_one({"id": match_id}, {"$set": {"used": True}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Matchen hittades inte")
+    return {"message": "Match markerad som använd"}
+
+@app.get("/api/official-matches")
+async def get_official_matches(user_id: str = Depends(verify_jwt_token)):
+    """Returnerar alla officiella matcher som inte redan har valts av användare."""
+    matches = list(db["official_matches"].find({"used": {"$ne": True}}, {"_id": 0}))
+    matches.sort(key=lambda m: m["date"])  # sortera efter datum
+    return matches
+
+
+
 # Health check
 @app.get("/api/health")
 async def health_check():
