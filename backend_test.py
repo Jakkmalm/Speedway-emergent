@@ -187,36 +187,241 @@ class SpeedwayAPITester:
         )
         return success
 
-    def test_create_heat(self):
-        """Test creating a heat for a match"""
+    def test_update_heat_result(self):
+        """Test updating heat results with enhanced features"""
         if not self.token or not self.created_match_id:
-            print("   ⚠️  No auth token or match ID, skipping heat creation")
+            print("   ⚠️  No auth token or match ID, skipping heat result update")
             return True
 
-        heat_data = {
-            "heat_number": 1,
-            "drivers": [
-                {"name": "Test Driver 1", "team": "Dackarna", "gate": 1},
-                {"name": "Test Driver 2", "team": "Masarna", "gate": 2},
-                {"name": "Test Driver 3", "team": "Vetlanda", "gate": 3},
-                {"name": "Test Driver 4", "team": "Indianerna", "gate": 4}
-            ]
-        }
+        # Get the match to see available heats
+        success, match_data = self.run_test(
+            "Get Match for Heat Update",
+            "GET",
+            f"/api/matches/{self.created_match_id}",
+            200
+        )
         
+        if not success or not match_data.get('heats'):
+            print("   ⚠️  No heats found in match")
+            return False
+
+        # Test updating first heat result
+        first_heat = match_data['heats'][0]
+        heat_number = first_heat['heat_number']
+        
+        # Create results for all riders in the heat
+        results = []
+        positions = [1, 2, 3, 4]
+        for i, (gate, rider_info) in enumerate(first_heat['riders'].items()):
+            results.append({
+                "rider_id": rider_info['rider_id'],
+                "position": positions[i],
+                "status": "completed"
+            })
+
+        result_data = {
+            "results": results,
+            "joker_rider_id": None,
+            "joker_team": None
+        }
+
         success, response = self.run_test(
-            "Create Heat",
-            "POST",
-            f"/api/matches/{self.created_match_id}/heats",
+            f"Update Heat {heat_number} Result",
+            "PUT",
+            f"/api/matches/{self.created_match_id}/heat/{heat_number}/result",
             200,
-            data=heat_data,
+            data=result_data,
             auth_required=True
         )
         
-        if success and 'heat_id' in response:
-            self.created_heat_id = response['heat_id']
-            print(f"   ✅ Heat created with ID: {self.created_heat_id}")
+        if success:
+            print(f"   ✅ Heat {heat_number} result updated successfully")
         
         return success
+
+    def test_complete_all_heats(self):
+        """Test completing all 15 heats for match confirmation"""
+        if not self.token or not self.created_match_id:
+            print("   ⚠️  No auth token or match ID, skipping heat completion")
+            return True
+
+        # Get the match to see all heats
+        success, match_data = self.run_test(
+            "Get Match for Heat Completion",
+            "GET",
+            f"/api/matches/{self.created_match_id}",
+            200
+        )
+        
+        if not success or not match_data.get('heats'):
+            print("   ⚠️  No heats found in match")
+            return False
+
+        completed_heats = 0
+        for heat in match_data['heats']:
+            if heat['status'] == 'completed':
+                completed_heats += 1
+                continue
+                
+            heat_number = heat['heat_number']
+            
+            # Create results for all riders in the heat
+            results = []
+            positions = [1, 2, 3, 4]
+            for i, (gate, rider_info) in enumerate(heat['riders'].items()):
+                results.append({
+                    "rider_id": rider_info['rider_id'],
+                    "position": positions[i],
+                    "status": "completed"
+                })
+
+            result_data = {
+                "results": results,
+                "joker_rider_id": None,
+                "joker_team": None
+            }
+
+            success, response = self.run_test(
+                f"Complete Heat {heat_number}",
+                "PUT",
+                f"/api/matches/{self.created_match_id}/heat/{heat_number}/result",
+                200,
+                data=result_data,
+                auth_required=True
+            )
+            
+            if success:
+                completed_heats += 1
+            else:
+                print(f"   ❌ Failed to complete heat {heat_number}")
+                return False
+
+        print(f"   ✅ Completed {completed_heats}/15 heats")
+        return completed_heats >= 15
+
+    def test_confirm_match(self):
+        """Test match confirmation system"""
+        if not self.token or not self.created_match_id:
+            print("   ⚠️  No auth token or match ID, skipping match confirmation")
+            return True
+
+        success, response = self.run_test(
+            "Confirm Match",
+            "PUT",
+            f"/api/matches/{self.created_match_id}/confirm",
+            200,
+            auth_required=True
+        )
+        
+        if success:
+            self.user_match_id = response.get('user_match_id')
+            print(f"   ✅ Match confirmed, user match ID: {self.user_match_id}")
+            
+            # Check for discrepancies
+            discrepancies = response.get('discrepancies', [])
+            if discrepancies:
+                print(f"   ⚠️  Found {len(discrepancies)} discrepancies with official results")
+            else:
+                print(f"   ✅ No discrepancies found")
+        
+        return success
+
+    def test_get_user_matches(self):
+        """Test getting user's completed matches"""
+        if not self.token:
+            print("   ⚠️  No auth token, skipping user matches test")
+            return True
+
+        success, response = self.run_test(
+            "Get User Matches",
+            "GET",
+            "/api/user/matches",
+            200,
+            auth_required=True
+        )
+        
+        if success:
+            matches_count = len(response) if isinstance(response, list) else 0
+            print(f"   ✅ Found {matches_count} user matches")
+            
+            # Check if our confirmed match is in the list
+            if self.user_match_id:
+                found_match = any(match.get('id') == self.user_match_id for match in response)
+                if found_match:
+                    print(f"   ✅ Confirmed match found in user matches")
+                else:
+                    print(f"   ⚠️  Confirmed match not found in user matches")
+        
+        return success
+
+    def test_resolve_discrepancy(self):
+        """Test conflict resolution system"""
+        if not self.token or not self.user_match_id:
+            print("   ⚠️  No auth token or user match ID, skipping discrepancy resolution")
+            return True
+
+        # Test accepting official results
+        resolution_data = {
+            "action": "accept_official"
+        }
+
+        success, response = self.run_test(
+            "Resolve Discrepancy (Accept Official)",
+            "PUT",
+            f"/api/user/matches/{self.user_match_id}/resolve",
+            200,
+            data=resolution_data,
+            auth_required=True
+        )
+        
+        if success:
+            print(f"   ✅ Discrepancy resolved by accepting official results")
+        
+        return success
+
+    def test_team_colors_and_riders(self):
+        """Test team color system and rider assignments"""
+        if not self.created_match_id:
+            print("   ⚠️  No match ID, skipping team colors test")
+            return True
+
+        success, match_data = self.run_test(
+            "Get Match for Team Colors Test",
+            "GET",
+            f"/api/matches/{self.created_match_id}",
+            200
+        )
+        
+        if not success or not match_data.get('heats'):
+            return False
+
+        # Check first heat for proper team color assignments
+        first_heat = match_data['heats'][0]
+        home_colors_found = []
+        away_colors_found = []
+        
+        for gate, rider_info in first_heat['riders'].items():
+            helmet_color = rider_info.get('helmet_color')
+            team = rider_info.get('team')
+            
+            if team == 'home':
+                home_colors_found.append(helmet_color)
+            elif team == 'away':
+                away_colors_found.append(helmet_color)
+
+        # Check for expected home team colors (Red/Blue)
+        expected_home_colors = ['#DC2626', '#1D4ED8']  # Red, Blue
+        expected_away_colors = ['#EAB308', '#FFFFFF']  # Yellow, White
+        
+        home_colors_correct = all(color in expected_home_colors for color in home_colors_found)
+        away_colors_correct = all(color in expected_away_colors for color in away_colors_found)
+        
+        if home_colors_correct and away_colors_correct:
+            print(f"   ✅ Team colors correctly assigned - Home: {home_colors_found}, Away: {away_colors_found}")
+            return True
+        else:
+            print(f"   ❌ Team colors incorrect - Home: {home_colors_found}, Away: {away_colors_found}")
+            return False
 
     def test_get_specific_team(self):
         """Test getting a specific team"""
