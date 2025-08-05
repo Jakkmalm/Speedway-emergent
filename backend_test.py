@@ -455,10 +455,19 @@ class SpeedwayAPITester:
         self.test_register_user()
         self.test_login_user()
         
-        # Authenticated operations
+        # Match creation and management
         self.test_create_match()
         self.test_get_specific_match()
-        self.test_create_heat()
+        
+        # Enhanced features testing
+        self.test_team_colors_and_riders()
+        self.test_update_heat_result()
+        self.test_complete_all_heats()
+        self.test_confirm_match()
+        
+        # User matches and conflict resolution
+        self.test_get_user_matches()
+        self.test_resolve_discrepancy()
         
         # Additional tests
         self.test_get_specific_team()
