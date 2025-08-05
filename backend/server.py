@@ -1,5 +1,6 @@
 import os
 import uuid
+# from scraping.flashscore import fetch_official_speedway_matches
 from datetime import datetime, timedelta
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Depends, status
@@ -597,6 +598,32 @@ async def get_official_matches(user_id: str = Depends(verify_jwt_token)):
     matches = list(db["official_matches"].find({"used": {"$ne": True}}, {"_id": 0}))
     matches.sort(key=lambda m: m["date"])  # sortera efter datum
     return matches
+
+@app.post("/api/admin/import-official-matches")
+def import_official_matches():
+    try:
+        # Lazy import – så att appen startar även om playwright saknas
+        from scraping.flashscore import fetch_official_speedway_matches
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Import error: {e}")
+
+    try:
+        matches = fetch_official_speedway_matches()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Scraper error: {e}")
+
+    added = 0
+    for match in matches:
+        exists = db["official_matches"].find_one({
+            "home_team": match["home_team"],
+            "away_team": match["away_team"],
+            "date": match["date"]
+        })
+        if not exists:
+            db["official_matches"].insert_one(match)
+            added += 1
+
+    return {"imported_matches": added, "fetched": len(matches)}
 
 
 
