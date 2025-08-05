@@ -13,6 +13,7 @@ class SpeedwayAPITester:
         self.created_match_id = None
         self.created_heat_id = None
         self.team_ids = []
+        self.user_match_id = None
 
     def run_test(self, name, method, endpoint, expected_status, data=None, auth_required=False):
         """Run a single API test"""
