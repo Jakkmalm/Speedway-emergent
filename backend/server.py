@@ -1,6 +1,8 @@
 import os
 import uuid
 # from scraping.flashscore import fetch_official_speedway_matches
+#IMPORT svemo-scrape
+# from scraping.svemo import fetch_all_svemo_heats
 from datetime import datetime, timedelta
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Depends, status
@@ -12,6 +14,11 @@ import jwt
 import bcrypt
 import requests
 from bs4 import BeautifulSoup
+# TEST ASYNC MONGODB
+# from motor.motor_asyncio import AsyncIOMotorClient
+
+
+
 
 # Environment setup
 MONGO_URL = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
@@ -27,6 +34,13 @@ matches_collection = db['matches']
 riders_collection = db['riders']
 user_matches_collection = db['user_matches']
 official_results_collection = db['official_results']
+official_matches_collection = db["official_matches"]  # ✅ lägg till denna
+official_heats_collection = db["official_heats"]
+
+# TESTAR EN ASYNC
+# async_client = AsyncIOMotorClient(MONGO_URL)
+# async_db = async_client['speedway_elitserien']
+# async_official_heats_collection = async_db["official_heats"]
 
 # FastAPI app
 app = FastAPI(title="Speedway Elitserien API")
@@ -334,21 +348,36 @@ async def get_matches():
         away_team = teams_collection.find_one({"id": match["away_team_id"]})
         match["home_team"] = home_team["name"] if home_team else "Okänt lag"
         match["away_team"] = away_team["name"] if away_team else "Okänt lag"
+        
+        # Lägg till detta om du vill säkerställa att det alltid finns med (null om saknas)
+        match["official_match_id"] = match.get("official_match_id", None)
+
     return matches
 
 @app.post("/api/matches")
 async def create_match(match_data: dict, user_id: str = Depends(verify_jwt_token)):
+    # Normalisera datumformat
+    match_date = datetime.fromisoformat(match_data["date"].replace("Z", "+00:00"))
+
+    # Kontrollera om användaren redan har skapat denna match
+    existing = matches_collection.find_one({
+        "created_by": user_id,
+        "home_team_id": match_data["home_team_id"],
+        "away_team_id": match_data["away_team_id"],
+        "date": match_date,
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="Du har redan lagt till den här matchen.")
+
     match_id = str(uuid.uuid4())
-    
-    # Generate the 15 predetermined heats
     heats = generate_match_heats(match_data["home_team_id"], match_data["away_team_id"])
-    
+
     match = {
         "id": match_id,
         "home_team_id": match_data["home_team_id"],
         "away_team_id": match_data["away_team_id"],
-        "date": datetime.fromisoformat(match_data["date"].replace("Z", "+00:00")),
-        "venue": match_data["venue"],
+        "date": match_date,
+        "venue": match_data.get("venue", ""),
         "status": "upcoming",
         "home_score": 0,
         "away_score": 0,
@@ -356,10 +385,17 @@ async def create_match(match_data: dict, user_id: str = Depends(verify_jwt_token
         "joker_used_home": False,
         "joker_used_away": False,
         "created_by": user_id,
-        "created_at": datetime.utcnow()
+        "created_at": datetime.utcnow(),
+        "official_match_id": match_data.get("official_match_id")  # ✅ Lägg till detta
     }
+
     matches_collection.insert_one(match)
-    return {"message": "Match skapad med förbestämda heat", "match_id": match_id}
+
+    return {
+        "message": "Match skapad med förbestämda heat",
+        "match_id": match_id
+    }
+
 
 @app.get("/api/matches/{match_id}")
 async def get_match(match_id: str):
@@ -374,6 +410,19 @@ async def get_match(match_id: str):
     match["away_team"] = away_team["name"] if away_team else "Okänt lag"
     
     return match
+
+# Ta bort en match som den inloggade användaren själv skapat
+@app.delete("/api/matches/{match_id}")
+async def delete_match(match_id: str, user_id: str = Depends(verify_jwt_token)):
+    print(f"DELETE request received for match_id: {match_id} from user: {user_id}")
+    match = matches_collection.find_one({"id": match_id})
+    if not match:
+        raise HTTPException(status_code=404, detail="Match hittades inte")
+    if match.get("created_by") != user_id:
+        raise HTTPException(status_code=403, detail="Inte behörig att ta bort den här matchen")
+    matches_collection.delete_one({"id": match_id})
+    return {"message": "Match borttagen"}
+
 
 @app.put("/api/matches/{match_id}/heat/{heat_number}/result")
 async def update_heat_result(match_id: str, heat_number: int, result_data: dict, user_id: str = Depends(verify_jwt_token)):
@@ -534,23 +583,75 @@ async def confirm_match(match_id: str, user_id: str = Depends(verify_jwt_token))
 
 @app.get("/api/user/matches")
 async def get_user_matches(user_id: str = Depends(verify_jwt_token)):
-    """Get all matches completed by the user"""
+    """Get all matches completed by the user, and compare to official if available"""
     user_matches = list(user_matches_collection.find({"user_id": user_id}, {"_id": 0}))
-    
-    # Enrich with match details
+
     for user_match in user_matches:
         match = matches_collection.find_one({"id": user_match["match_id"]})
-        if match:
-            home_team = teams_collection.find_one({"id": match["home_team_id"]})
-            away_team = teams_collection.find_one({"id": match["away_team_id"]})
-            user_match["match_details"] = {
-                "home_team": home_team["name"] if home_team else "Okänt lag",
-                "away_team": away_team["name"] if away_team else "Okänt lag",
-                "date": match["date"],
-                "venue": match["venue"]
-            }
-    
+        if not match:
+            continue  # Hoppa över om matchen inte finns
+
+        # Lägg till matchdetaljer
+        home_team = teams_collection.find_one({"id": match["home_team_id"]})
+        away_team = teams_collection.find_one({"id": match["away_team_id"]})
+        user_match["match_details"] = {
+            "home_team": home_team["name"] if home_team else "Okänt lag",
+            "away_team": away_team["name"] if away_team else "Okänt lag",
+            "date": match.get("date"),
+            "venue": match.get("venue", "")
+        }
+
+        # Hämta official_match koppling
+        official_match_id = match.get("official_match_id")
+        if official_match_id:
+            official = official_matches_collection.find_one({"id": official_match_id})
+
+            if official and "home_score" in official and "away_score" in official:
+                discrepancies = []
+
+                # Jämför hemmalagets poäng
+                if user_match["user_results"].get("home_score") != official["home_score"]:
+                    discrepancies.append({
+                        "type": "home_score",
+                        "user_value": user_match["user_results"].get("home_score"),
+                        "official_value": official["home_score"]
+                    })
+
+                # Jämför bortalagets poäng
+                if user_match["user_results"].get("away_score") != official["away_score"]:
+                    discrepancies.append({
+                        "type": "away_score",
+                        "user_value": user_match["user_results"].get("away_score"),
+                        "official_value": official["away_score"]
+                    })
+
+                # Om skillnader hittades
+                if discrepancies:
+                    user_match["status"] = "disputed"
+                    user_match["discrepancies"] = discrepancies
+                else:
+                    user_match["status"] = "validated"
+                    user_match["discrepancies"] = []
+
+                # Lägg alltid till officiella resultat om de finns
+                user_match["official_results"] = {
+                    "home_score": official["home_score"],
+                    "away_score": official["away_score"]
+                }
+
+            else:
+                # Om official match saknar poäng → visa ändå complete
+                user_match["status"] = "complete"
+                user_match["discrepancies"] = []
+
+        else:
+            # Ingen officiell match kopplad
+            user_match["status"] = "complete"
+            user_match["discrepancies"] = []
+
     return user_matches
+
+
 
 @app.put("/api/user/matches/{user_match_id}/resolve")
 async def resolve_discrepancy(user_match_id: str, resolution_data: dict, user_id: str = Depends(verify_jwt_token)):
@@ -558,19 +659,30 @@ async def resolve_discrepancy(user_match_id: str, resolution_data: dict, user_id
     user_match = user_matches_collection.find_one({"id": user_match_id, "user_id": user_id})
     if not user_match:
         raise HTTPException(status_code=404, detail="Användarens match hittades inte")
-    
+
+    # Hämta match för att få official_match_id
+    match = matches_collection.find_one({"id": user_match["match_id"]})
+    if not match:
+        raise HTTPException(status_code=404, detail="Match hittades inte")
+
     if resolution_data["action"] == "accept_official":
-        # Update user results to match official
-        if user_match.get("official_results"):
-            user_match["user_results"]["home_score"] = user_match["official_results"]["home_score"]
-            user_match["user_results"]["away_score"] = user_match["official_results"]["away_score"]
-            user_match["status"] = "validated"
-            user_match["discrepancies"] = []
+        official_match_id = match.get("official_match_id")
+        if official_match_id:
+            official = official_matches_collection.find_one({"id": official_match_id})
+            if official and "home_score" in official and "away_score" in official:
+                user_match["user_results"]["home_score"] = official["home_score"]
+                user_match["user_results"]["away_score"] = official["away_score"]
+                user_match["status"] = "validated"
+                user_match["discrepancies"] = []
+            else:
+                raise HTTPException(status_code=400, detail="Officiella poäng saknas")
+        else:
+            raise HTTPException(status_code=400, detail="Ingen officiell match kopplad")
+    
     elif resolution_data["action"] == "keep_user":
-        # Keep user results, mark as validated
         user_match["status"] = "validated"
         user_match["discrepancies"] = []
-    
+
     user_matches_collection.update_one(
         {"id": user_match_id},
         {"$set": {
@@ -580,8 +692,9 @@ async def resolve_discrepancy(user_match_id: str, resolution_data: dict, user_id
             "resolved_at": datetime.utcnow()
         }}
     )
-    
+
     return {"message": "Konflikt löst"}
+
 
 # OFFICIAL DATA ENDPOINT.
 
@@ -626,11 +739,123 @@ def import_official_matches():
     return {"imported_matches": added, "fetched": len(matches)}
 
 
+@app.post("/api/admin/sync-teams-from-official")
+def sync_teams_from_official():
+    official_teams = set()
+
+    for m in db["official_matches"].find():
+        official_teams.add(m["home_team"].strip())
+        official_teams.add(m["away_team"].strip())
+
+    added = 0
+    for name in official_teams:
+        if not teams_collection.find_one({"name": name}):
+            new_team = {
+                "id": str(uuid.uuid4()),
+                "name": name,
+                "city": "",  # Kan fyllas i manuellt om vi vill
+                "points": 0,
+                "matches_played": 0
+            }
+            teams_collection.insert_one(new_team)
+            added += 1
+
+    return {"message": f"{added} lag tillagda i teams"}
+
+
+# OFFICIAL HEAT ENDPOINT
+@app.post("/api/admin/import-official-heats")
+async def import_official_heats():
+    from scraping.svemo import fetch_all_svemo_heats
+
+    try:
+        heats_data = await fetch_all_svemo_heats()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Scraper error: {e}")
+
+    added = 0
+    skipped_no_competition_id = 0
+    duplicates = 0
+    total_processed = 0
+
+    for heat_doc in heats_data:
+        total_processed += 1
+
+        comp_id = heat_doc.get("competition_id")
+        if not comp_id:
+            skipped_no_competition_id += 1
+            continue
+
+        exists = official_heats_collection.find_one({"competition_id": comp_id})
+        if exists:
+            duplicates += 1
+            continue
+
+        official_heats_collection.insert_one(heat_doc)
+        added += 1
+
+    return {
+        "message": f"{added} heatmatcher importerade",
+        "fetched": len(heats_data),
+        "skipped_no_competition_id": skipped_no_competition_id,
+        "duplicates": duplicates,
+        "total_processed": total_processed
+    }
+
+
+
+# @app.post("/api/admin/import-official-heats")
+# def import_official_heats():
+#     try:
+#         from scraping.svemo import fetch_all_svemo_heats
+#         heats_data = fetch_all_svemo_heats()
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Scraper error: {e}")
+
+#     added = 0
+#     skipped_no_competition_id = 0
+#     duplicates = 0
+#     total_processed = 0
+
+#     for heat_doc in heats_data:
+#         total_processed += 1
+
+#         comp_id = heat_doc.get("competition_id")
+#         if not comp_id:
+#             skipped_no_competition_id += 1
+#             continue
+
+#         exists = official_heats_collection.find_one({
+#             "competition_id": comp_id
+#         })
+#         if exists:
+#             duplicates += 1
+#             continue
+
+#         official_heats_collection.insert_one(heat_doc)
+#         added += 1
+
+#     return {
+#         "message": f"{added} heatmatcher importerade",
+#         "fetched": len(heats_data),
+#         "skipped_no_competition_id": skipped_no_competition_id,
+#         "duplicates": duplicates,
+#         "total_processed": total_processed
+#     }
+
+
+
+
+
 
 # Health check
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok", "service": "Speedway Elitserien API"}
+
+
+
+
 
 if __name__ == "__main__":
     import uvicorn
