@@ -171,10 +171,6 @@ HEADERS = {
 
 
 async def fetch_all_svemo_heats() -> List[Dict]:
-    from playwright.async_api import async_playwright, TimeoutError as PWTimeout
-    from bs4 import BeautifulSoup
-    import re
-    from urllib.parse import urljoin
 
     all_matches = []
     seen_ids = set()
