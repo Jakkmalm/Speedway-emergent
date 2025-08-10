@@ -84,8 +84,27 @@ function App() {
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [confirmationResult, setConfirmationResult] = useState(null);
 
-  // Förare per lag, används för taktiska reserver (heat 5–13)
+  // Regler för taktisk reserv – ändra bara här om reglerna uppdateras
+  const TACTICAL_START_HEAT = 5; // första heat där taktisk reserv är tillåten
+  const TACTICAL_END_HEAT = 13; // sista heat där taktisk reserv är tillåten
+  const MIN_TACTICAL_DIFF = 6; // laget måste ligga minst så här många poäng efter för att få toppa
+
+  // Förare per lag – fylls på via API när en match laddas
   const [ridersByTeam, setRidersByTeam] = useState({ home: [], away: [] });
+
+  // Håller reda på om taktisk reserv har använts av ett lag (home/away) i denna match
+  const [tacticalUsed, setTacticalUsed] = useState({
+    home: false,
+    away: false,
+  });
+
+  // Håller reda på vilka förare som redan “toppats” (använts som taktisk reserv) och inte får användas igen
+  const [toppedRiders, setToppedRiders] = useState([]);
+
+  // Nollställ taktiskUsed när en ny match laddas
+  useEffect(() => {
+    setTacticalUsed({ home: false, away: false });
+  }, [currentMatch]);
 
   // useEffect(() => {
   //   async function loadRiders() {
@@ -107,9 +126,12 @@ function App() {
   //   loadRiders();
   // }, [currentMatch]);
   useEffect(() => {
+    // Nollställ taktisk reserv och toppningar vid ny match
+    setTacticalUsed({ home: false, away: false });
+    setToppedRiders([]);
+
     async function loadRiders() {
       if (!currentMatch) return;
-
       let homeRiders = [];
       let awayRiders = [];
       try {
@@ -120,10 +142,10 @@ function App() {
           `/api/teams/${currentMatch.away_team_id}/riders`
         );
       } catch (e) {
-        // ignorerar fel och använder fallback
+        // Om API-anropet misslyckas, fall tillbaka på nedan
       }
 
-      // Fallback: hämta unika förare från matchens heats
+      // Fallback: extrahera unika förare från heatens ursprungliga riderdata
       if (!homeRiders.length) {
         const seen = new Set();
         homeRiders = currentMatch.heats
@@ -148,10 +170,8 @@ function App() {
             return true;
           });
       }
-
       setRidersByTeam({ home: homeRiders, away: awayRiders });
     }
-
     loadRiders();
   }, [currentMatch]);
 
@@ -169,6 +189,8 @@ function App() {
   };
 
   // Beräkna bonuspoäng enligt Elitseriereglerna
+  // Räkna bonuspoäng: bonus till tvåan i ett 5–1 och trean i ett 3–3
+  // Räkna bonuspoäng (2:a i ett 5–1 och 3:a i ett 3–3)
   function computeHeatBonuses(heat) {
     const bonuses = {};
     if (!heat || !Array.isArray(heat.results)) return bonuses;
@@ -189,9 +211,24 @@ function App() {
     return bonuses;
   }
 
+  // Kontrollera om ett lag får använda taktisk reserv just nu
+  // Kontrollera om laget får använda taktisk reserv i detta läge
+  const canUseTactical = (team) => {
+    if (!currentMatch) return false;
+    if (tacticalUsed[team]) return false; // laget har redan utnyttjat taktisk reserv
+    const diff = Math.abs(currentMatch.home_score - currentMatch.away_score);
+    const isLosing =
+      team === "home"
+        ? currentMatch.home_score < currentMatch.away_score
+        : currentMatch.away_score < currentMatch.home_score;
+    return diff >= MIN_TACTICAL_DIFF && isLosing;
+  };
+
   // Anropa backend för att uppdatera föraruppställningen i ett heat.
   // assignments är ett objekt som mappar gate ("1"–"4") → ny rider_id.
   // Anropa API:t för att byta förare i ett heat (taktisk reserv / rider replacement)
+  // Anropa backend för att byta förare i ett heat (taktisk reserv / rider replacement)
+  // Anropa backend för att ändra föraruppställning i ett heat (taktisk reserv eller rider replacement)
   async function updateHeatRiders(matchId, heatNumber, assignments) {
     const token = localStorage.getItem("speedway_token");
     const response = await fetch(
@@ -214,12 +251,23 @@ function App() {
     return response.json();
   }
 
-  // Callback för när användaren byter förare via drop‑down
+  // Körs när användaren byter förare i dropdownen
+  // När användaren väljer en ny förare (taktisk reserv)
   const handleChangeRider = async (heatNumber, assignments) => {
     if (!currentMatch) return;
+    const gate = Object.keys(assignments)[0];
+    const newRiderId = assignments[gate];
+    // Hitta vilket lag som äger denna gate
+    const heat = currentMatch.heats.find((h) => h.heat_number === heatNumber);
+    const team = heat?.riders[gate]?.team;
+    // Förhindra att toppa en förare flera gånger
+    if (toppedRiders.includes(newRiderId)) {
+      alert("Denna förare har redan toppats och kan inte användas igen.");
+      return;
+    }
     try {
       await updateHeatRiders(currentMatch.id, heatNumber, assignments);
-      // uppdatera frontendens state efter lyckat byte
+      // Uppdatera lokalt heat
       setCurrentMatch((prev) => {
         const updatedHeats = prev.heats.map((h) =>
           h.heat_number === heatNumber
@@ -228,6 +276,15 @@ function App() {
         );
         return { ...prev, heats: updatedHeats };
       });
+      // Markera att denna förare har toppats
+      setToppedRiders((prev) => [...prev, newRiderId]);
+      // Markera att laget har använt sin taktiska reserv
+      if (team) {
+        setTacticalUsed((prev) => ({
+          ...prev,
+          [team]: true,
+        }));
+      }
     } catch (err) {
       alert(err.message);
     }
@@ -643,8 +700,8 @@ function App() {
     "Rospiggarna Hallstavik": "Rospiggarna",
     "Dackarna Malilla": "Dackarna",
     "piraterna motala": "Piraterna Motala",
-    Lejonen: "Lejonen",
-    Smederna: "Smederna",
+    lejonen: "Lejonen",
+    smederna: "Smederna",
     // fyll på vid behov…
   };
 
@@ -1234,12 +1291,6 @@ function App() {
                           <div className="w-4 h-4 bg-red-600 rounded-full"></div>
                           <div className="w-4 h-4 bg-blue-600 rounded-full"></div>
                         </div>
-                        {currentMatch.joker_used_home && (
-                          <Badge className="bg-purple-600">
-                            <Star className="w-3 h-3 mr-1" />
-                            Joker använd
-                          </Badge>
-                        )}
                       </div>
                       <div>
                         <div className="text-lg text-gray-400">-</div>
@@ -1270,12 +1321,6 @@ function App() {
                           <div className="w-4 h-4 bg-yellow-500 rounded-full"></div>
                           <div className="w-4 h-4 bg-white border border-gray-300 rounded-full"></div>
                         </div>
-                        {currentMatch.joker_used_away && (
-                          <Badge className="bg-purple-600">
-                            <Star className="w-3 h-3 mr-1" />
-                            Joker använd
-                          </Badge>
-                        )}
                       </div>
                     </div>
                   </CardContent>
@@ -1410,10 +1455,10 @@ function App() {
 
                             {/* Knappar för att registrera eller redigera heatresultat */}
                             {user && (
-                              <div className="flex space-x-2">
+                              <>
                                 {heat.status === "upcoming" && (
                                   <Button
-                                    onClick={() => openHeatResult(heat)}
+                                    onClick={() => openHeatResult(heat)} // <-- onClick saknades
                                     size="sm"
                                     className="flex-1"
                                   >
@@ -1423,15 +1468,15 @@ function App() {
                                 {heat.status === "completed" &&
                                   currentMatch.status !== "confirmed" && (
                                     <Button
-                                      onClick={() => editHeatResult(heat)}
+                                      onClick={() => editHeatResult(heat)} // <-- onClick saknades
                                       size="sm"
                                       variant="outline"
                                       className="flex-1"
                                     >
-                                      <Edit className="w-3 h-3 mr-1" /> Redigera
+                                      Redigera
                                     </Button>
                                   )}
-                              </div>
+                              </>
                             )}
                           </div>
                         );
@@ -1723,10 +1768,11 @@ function App() {
         {/* Heat Result Dialog */}
         {currentHeat && (
           <Dialog
-            open={!!currentHeat}
-            onOpenChange={() => {
-              setCurrentHeat(null);
-              setEditingHeat(null);
+            onOpenChange={(open) => {
+              if (!open) {
+                setCurrentHeat(null);
+                setEditingHeat(null);
+              }
             }}
           >
             <DialogContent className="max-w-2xl">
@@ -1742,129 +1788,113 @@ function App() {
                 </DialogDescription>
               </DialogHeader>
 
-              <div className="space-y-4">
-                {Object.keys(currentHeat.riders)
-                  .sort()
-                  .map((gate) => {
-                    const rider = currentHeat.riders[gate];
-                    return (
-                      <div
-                        key={gate}
-                        className={`flex items-center space-x-4 p-3 border rounded ${getRiderGateStyle(
-                          rider.team,
-                          gate
-                        )}`}
-                      >
-                        <div className="flex items-center space-x-2">
-                          <span className="w-6 h-6 bg-gray-200 rounded-full text-sm flex items-center justify-center">
-                            {gate}
-                          </span>
-                          <div
-                            className="w-4 h-4 rounded-full border"
-                            style={{
-                              backgroundColor: rider.helmet_color,
-                              borderColor:
-                                rider.helmet_color === "#FFFFFF"
-                                  ? "#ccc"
-                                  : rider.helmet_color,
-                            }}
-                          ></div>
-                          <span className="font-medium">{rider.name}</span>
+              {Object.keys(currentHeat.riders)
+                .sort()
+                .map((gate) => {
+                  const rider = currentHeat.riders[gate];
+                  const res = heatResults[rider.rider_id] || {
+                    position: "",
+                    status: "completed",
+                  };
+                  const team = rider.team; // 'home' eller 'away'
+                  // Lista av lagets förare minus redan toppade
+                  const availableOptions = (ridersByTeam[team] || []).filter(
+                    (opt) => !toppedRiders.includes(opt.id)
+                  );
+                  const allowTactical =
+                    currentHeat.heat_number >= TACTICAL_START_HEAT &&
+                    currentHeat.heat_number <= TACTICAL_END_HEAT &&
+                    canUseTactical(team);
+
+                  return (
+                    <div key={gate} className="border rounded-md p-3 mb-3">
+                      <div className="font-medium mb-2">
+                        Gate {gate}:{" "}
+                        {allowTactical ? (
+                          <select
+                            value={rider.rider_id}
+                            onChange={(e) =>
+                              handleChangeRider(currentHeat.heat_number, {
+                                [gate]: e.target.value,
+                              })
+                            }
+                            className="text-sm border rounded"
+                          >
+                            {availableOptions.map((opt) => (
+                              <option key={opt.id} value={opt.id}>
+                                {opt.name}
+                              </option>
+                            ))}
+                            {!availableOptions.some(
+                              (opt) => opt.id === rider.rider_id
+                            ) && (
+                              <option value={rider.rider_id}>
+                                {rider.name}
+                              </option>
+                            )}
+                          </select>
+                        ) : (
+                          <span>{rider.name}</span>
+                        )}
+                      </div>
+
+                      <div className="flex space-x-4">
+                        <div>
+                          <label className="text-sm mr-1">Placering:</label>
+                          <select
+                            value={res.position}
+                            onChange={(e) =>
+                              updateHeatResult(
+                                rider.rider_id,
+                                "position",
+                                parseInt(e.target.value)
+                              )
+                            }
+                            className="text-sm border rounded"
+                          >
+                            <option value="">Välj...</option>
+                            <option value="1">1:a</option>
+                            <option value="2">2:a</option>
+                            <option value="3">3:e</option>
+                            <option value="4">4:e</option>
+                          </select>
                         </div>
 
-                        <div className="flex items-center space-x-2 flex-1">
-                          <Select
-                            value={
-                              heatResults[rider.rider_id]?.status || "completed"
+                        <div>
+                          <label className="text-sm mr-1">Status:</label>
+                          <select
+                            value={res.status}
+                            onChange={(e) =>
+                              updateHeatResult(
+                                rider.rider_id,
+                                "status",
+                                e.target.value
+                              )
                             }
-                            onValueChange={(value) =>
-                              updateHeatResult(rider.rider_id, "status", value)
-                            }
+                            className="text-sm border rounded"
                           >
-                            <SelectTrigger className="w-32">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="completed">
-                                Genomförd
-                              </SelectItem>
-                              <SelectItem value="excluded">
-                                Utesluten
-                              </SelectItem>
-                            </SelectContent>
-                          </Select>
-
-                          {heatResults[rider.rider_id]?.status ===
-                            "completed" && (
-                            <Select
-                              value={
-                                heatResults[
-                                  rider.rider_id
-                                ]?.position?.toString() || ""
-                              }
-                              onValueChange={(value) =>
-                                updateHeatResult(
-                                  rider.rider_id,
-                                  "position",
-                                  parseInt(value)
-                                )
-                              }
-                            >
-                              <SelectTrigger className="w-20">
-                                <SelectValue placeholder="Pos" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="1">1:a</SelectItem>
-                                <SelectItem value="2">2:a</SelectItem>
-                                <SelectItem value="3">3:e</SelectItem>
-                                <SelectItem value="4">4:e</SelectItem>
-                              </SelectContent>
-                            </Select>
-                          )}
-
-                          {/* {(canUseJoker("home") || canUseJoker("away")) && (
-                            <Button
-                              variant={
-                                jokerRider === rider.rider_id
-                                  ? "default"
-                                  : "outline"
-                              }
-                              size="sm"
-                              onClick={() => {
-                                if (jokerRider === rider.rider_id) {
-                                  setJokerRider("");
-                                  setJokerTeam("");
-                                } else {
-                                  setJokerRider(rider.rider_id);
-                                  setJokerTeam(rider.team);
-                                }
-                              }}
-                            >
-                              <Star className="w-3 h-3 mr-1" />
-                              Joker
-                            </Button>
-                          )} */}
+                            <option value="completed">Genomförd</option>
+                            <option value="excluded">Utesluten</option>
+                          </select>
                         </div>
                       </div>
-                    );
-                  })}
+                    </div>
+                  );
+                })}
 
-                <div className="flex justify-end space-x-2 pt-4">
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setCurrentHeat(null);
-                      setEditingHeat(null);
-                    }}
-                  >
-                    <X className="w-4 h-4 mr-2" />
-                    Avbryt
-                  </Button>
-                  <Button onClick={submitHeatResult} disabled={loading}>
-                    <Save className="w-4 h-4 mr-2" />
-                    {loading ? "Sparar..." : "Spara resultat"}
-                  </Button>
-                </div>
+              <div className="flex justify-end space-x-2 mt-4">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setCurrentHeat(null);
+                    setEditingHeat(null);
+                  }}
+                >
+                  Avbryt
+                </Button>
+                <Button onClick={submitHeatResult} disabled={loading}>
+                  {loading ? "Sparar..." : "Spara resultat"}
+                </Button>
               </div>
             </DialogContent>
           </Dialog>
