@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { HeatRow } from "./components/HeatRow";
 import {
   Card,
   CardContent,
@@ -45,7 +46,7 @@ import {
 import "./App.css";
 
 const API_BASE_URL =
-  process.env.REACT_APP_BACKEND_URL || "http://localhost:8001";
+  process.env.REACT_APP_BACKEND_URL || "http://localhost:8002";
 
 function App() {
   const [user, setUser] = useState(null);
@@ -78,12 +79,81 @@ function App() {
   const [currentHeat, setCurrentHeat] = useState(null);
   const [editingHeat, setEditingHeat] = useState(null);
   const [heatResults, setHeatResults] = useState({});
-  const [jokerRider, setJokerRider] = useState("");
-  const [jokerTeam, setJokerTeam] = useState("");
 
   // Match confirmation
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [confirmationResult, setConfirmationResult] = useState(null);
+
+  // Förare per lag, används för taktiska reserver (heat 5–13)
+  const [ridersByTeam, setRidersByTeam] = useState({ home: [], away: [] });
+
+  // useEffect(() => {
+  //   async function loadRiders() {
+  //     if (!currentMatch) return;
+  //     try {
+  //       // Hämta alla förare i hemmalaget och bortalaget
+  //       const homeRiders = await apiCall(
+  //         `/api/teams/${currentMatch.home_team_id}/riders`
+  //       );
+  //       const awayRiders = await apiCall(
+  //         `/api/teams/${currentMatch.away_team_id}/riders`
+  //       );
+  //       // Sätt state { home: [...], away: [...] }
+  //       setRidersByTeam({ home: homeRiders, away: awayRiders });
+  //     } catch (err) {
+  //       console.error("Kunde inte ladda förare:", err);
+  //     }
+  //   }
+  //   loadRiders();
+  // }, [currentMatch]);
+  useEffect(() => {
+    async function loadRiders() {
+      if (!currentMatch) return;
+
+      let homeRiders = [];
+      let awayRiders = [];
+      try {
+        homeRiders = await apiCall(
+          `/api/teams/${currentMatch.home_team_id}/riders`
+        );
+        awayRiders = await apiCall(
+          `/api/teams/${currentMatch.away_team_id}/riders`
+        );
+      } catch (e) {
+        // ignorerar fel och använder fallback
+      }
+
+      // Fallback: hämta unika förare från matchens heats
+      if (!homeRiders.length) {
+        const seen = new Set();
+        homeRiders = currentMatch.heats
+          .flatMap((h) =>
+            Object.values(h.riders).filter((r) => r.team === "home")
+          )
+          .filter((r) => {
+            if (seen.has(r.rider_id)) return false;
+            seen.add(r.rider_id);
+            return true;
+          });
+      }
+      if (!awayRiders.length) {
+        const seen = new Set();
+        awayRiders = currentMatch.heats
+          .flatMap((h) =>
+            Object.values(h.riders).filter((r) => r.team === "away")
+          )
+          .filter((r) => {
+            if (seen.has(r.rider_id)) return false;
+            seen.add(r.rider_id);
+            return true;
+          });
+      }
+
+      setRidersByTeam({ home: homeRiders, away: awayRiders });
+    }
+
+    loadRiders();
+  }, [currentMatch]);
 
   // === helpers ===
   const isSameDay = (a, b) =>
@@ -96,6 +166,71 @@ function App() {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(
       d.getDate()
     )}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  // Beräkna bonuspoäng enligt Elitseriereglerna
+  function computeHeatBonuses(heat) {
+    const bonuses = {};
+    if (!heat || !Array.isArray(heat.results)) return bonuses;
+    const finished = heat.results
+      .filter((r) => r.status === "completed" && typeof r.position === "number")
+      .sort((a, b) => a.position - b.position);
+    if (finished.length < 3) return bonuses;
+    const riderTeams = {};
+    Object.values(heat.riders).forEach((r) => {
+      riderTeams[r.rider_id] = r.team;
+    });
+    if (riderTeams[finished[0].rider_id] === riderTeams[finished[1].rider_id]) {
+      bonuses[finished[1].rider_id] = 1;
+    }
+    if (riderTeams[finished[1].rider_id] === riderTeams[finished[2].rider_id]) {
+      bonuses[finished[2].rider_id] = 1;
+    }
+    return bonuses;
+  }
+
+  // Anropa backend för att uppdatera föraruppställningen i ett heat.
+  // assignments är ett objekt som mappar gate ("1"–"4") → ny rider_id.
+  // Anropa API:t för att byta förare i ett heat (taktisk reserv / rider replacement)
+  async function updateHeatRiders(matchId, heatNumber, assignments) {
+    const token = localStorage.getItem("speedway_token");
+    const response = await fetch(
+      `${API_BASE_URL}/api/matches/${matchId}/heat/${heatNumber}/riders`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token && { Authorization: `Bearer ${token}` }),
+        },
+        body: JSON.stringify(assignments),
+      }
+    );
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(
+        data.detail || "Kunde inte uppdatera heat‑uppställningen"
+      );
+    }
+    return response.json();
+  }
+
+  // Callback för när användaren byter förare via drop‑down
+  const handleChangeRider = async (heatNumber, assignments) => {
+    if (!currentMatch) return;
+    try {
+      await updateHeatRiders(currentMatch.id, heatNumber, assignments);
+      // uppdatera frontendens state efter lyckat byte
+      setCurrentMatch((prev) => {
+        const updatedHeats = prev.heats.map((h) =>
+          h.heat_number === heatNumber
+            ? { ...h, riders: { ...h.riders, ...assignments } }
+            : h
+        );
+        return { ...prev, heats: updatedHeats };
+      });
+    } catch (err) {
+      alert(err.message);
+    }
   };
 
   // Load data on mount
@@ -274,54 +409,54 @@ function App() {
     setLoading(false);
   };
 
-  const createFromOfficialAndStart = async () => {
-    if (!user) {
-      alert("Du måste vara inloggad.");
-      return;
-    }
-    if (!selectedOfficial) {
-      alert("Välj en officiell match först.");
-      return;
-    }
-    const chosen = new Date(matchForm.date);
-    // if (!isSameDay(chosen, new Date())) {
-    //   alert("Du kan bara skapa protokoll för matcher med datum = idag.");
-    //   return;
-    // }
-    if (!matchForm.home_team_id || !matchForm.away_team_id) {
-      alert("Kunde inte matcha lag mot din databas. Välj lagen manuellt.");
-      return;
-    }
+  // const createFromOfficialAndStart = async () => {
+  //   if (!user) {
+  //     alert("Du måste vara inloggad.");
+  //     return;
+  //   }
+  //   if (!selectedOfficial) {
+  //     alert("Välj en officiell match först.");
+  //     return;
+  //   }
+  //   const chosen = new Date(matchForm.date);
+  //   // if (!isSameDay(chosen, new Date())) {
+  //   //   alert("Du kan bara skapa protokoll för matcher med datum = idag.");
+  //   //   return;
+  //   // }
+  //   if (!matchForm.home_team_id || !matchForm.away_team_id) {
+  //     alert("Kunde inte matcha lag mot din databas. Välj lagen manuellt.");
+  //     return;
+  //   }
 
-    setLoading(true);
-    try {
-      const res = await apiCall("/api/matches", {
-        method: "POST",
-        body: JSON.stringify(matchForm),
-      });
-      // API:t returnerar { match_id: '...' }
-      const newId = res.match_id;
-      // Ladda match och hoppa till protokoll
-      const matchData = await apiCall(`/api/matches/${newId}`);
-      setCurrentMatch(matchData);
-      setActiveTab("protokoll");
-      // valfritt: töm form
-      // setMatchForm({ home_team_id:'', away_team_id:'', date:'', venue:'' });
-    } catch (e) {
-      alert("Kunde inte skapa match: " + e.message);
-    }
-    setLoading(false);
-  };
+  //   setLoading(true);
+  //   try {
+  //     const res = await apiCall("/api/matches", {
+  //       method: "POST",
+  //       body: JSON.stringify(matchForm),
+  //     });
+  //     // API:t returnerar { match_id: '...' }
+  //     const newId = res.match_id;
+  //     // Ladda match och hoppa till protokoll
+  //     const matchData = await apiCall(`/api/matches/${newId}`);
+  //     setCurrentMatch(matchData);
+  //     setActiveTab("protokoll");
+  //     // valfritt: töm form
+  //     // setMatchForm({ home_team_id:'', away_team_id:'', date:'', venue:'' });
+  //   } catch (e) {
+  //     alert("Kunde inte skapa match: " + e.message);
+  //   }
+  //   setLoading(false);
+  // };
 
-  const startMatch = async (matchId) => {
-    try {
-      const matchData = await apiCall(`/api/matches/${matchId}`);
-      setCurrentMatch(matchData);
-      setActiveTab("protokoll");
-    } catch (error) {
-      alert("Kunde inte ladda match: " + error.message);
-    }
-  };
+  // const startMatch = async (matchId) => {
+  //   try {
+  //     const matchData = await apiCall(`/api/matches/${matchId}`);
+  //     setCurrentMatch(matchData);
+  //     setActiveTab("protokoll");
+  //   } catch (error) {
+  //     alert("Kunde inte ladda match: " + error.message);
+  //   }
+  // };
 
   const openHeatResult = (heat) => {
     setCurrentHeat(heat);
@@ -349,21 +484,6 @@ function App() {
       };
     });
     setHeatResults(initialResults);
-
-    // Set joker if exists
-    const jokerResult = heat.results?.find(
-      (r) => r.rider_id === heat.joker_rider
-    );
-    if (jokerResult) {
-      setJokerRider(heat.joker_rider);
-      const jokerRiderInfo = Object.values(heat.riders).find(
-        (r) => r.rider_id === heat.joker_rider
-      );
-      setJokerTeam(jokerRiderInfo?.team || "");
-    } else {
-      setJokerRider("");
-      setJokerTeam("");
-    }
   };
 
   const updateHeatResult = (riderId, field, value) => {
@@ -389,8 +509,6 @@ function App() {
 
       const resultData = {
         results: results,
-        joker_rider_id: jokerRider || null,
-        joker_team: jokerTeam || null,
       };
 
       await apiCall(
@@ -456,25 +574,6 @@ function App() {
       alert("Kunde inte lösa konflikt: " + error.message);
     }
     setLoading(false);
-  };
-
-  const canUseJoker = (team) => {
-    if (!currentMatch) return false;
-
-    const scoreDiff = Math.abs(
-      currentMatch.home_score - currentMatch.away_score
-    );
-    const isLosingTeam =
-      team === "home"
-        ? currentMatch.home_score < currentMatch.away_score
-        : currentMatch.away_score < currentMatch.home_score;
-
-    const jokerUsed =
-      team === "home"
-        ? currentMatch.joker_used_home
-        : currentMatch.joker_used_away;
-
-    return scoreDiff >= 6 && isLosingTeam && !jokerUsed;
   };
 
   const formatDate = (dateString) => {
@@ -544,8 +643,8 @@ function App() {
     "Rospiggarna Hallstavik": "Rospiggarna",
     "Dackarna Malilla": "Dackarna",
     "piraterna motala": "Piraterna Motala",
-    "Lejonen": "Lejonen",
-    "Smederna": "Smederna",
+    Lejonen: "Lejonen",
+    Smederna: "Smederna",
     // fyll på vid behov…
   };
 
@@ -1123,6 +1222,7 @@ function App() {
                   </CardHeader>
                   <CardContent>
                     <div className="grid grid-cols-3 gap-8 text-center">
+                      {/* <HeatRow/> */}
                       <div>
                         <div className="text-4xl font-bold text-red-600">
                           {currentMatch.home_score}
@@ -1191,112 +1291,151 @@ function App() {
                   </CardHeader>
                   <CardContent>
                     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                      {currentMatch.heats?.map((heat) => (
-                        <div
-                          key={heat.heat_number}
-                          className="border rounded-lg p-4 hover:bg-gray-50"
-                        >
-                          <div className="flex items-center justify-between mb-3">
-                            <h4 className="font-semibold">
-                              Heat {heat.heat_number}
-                            </h4>
-                            <div className="flex items-center space-x-2">
-                              {heat.is_tactical_heat && (
-                                <Badge className="bg-orange-500">
-                                  <Zap className="w-3 h-3 mr-1" />
-                                  Taktisk
-                                </Badge>
-                              )}
-                              {getStatusBadge(heat.status)}
+                      {currentMatch.heats?.map((heat) => {
+                        // Beräkna bonuspoäng för heatet
+                        const bonuses = computeHeatBonuses(heat);
+                        return (
+                          <div
+                            key={heat.heat_number}
+                            className="border rounded-lg p-4 hover:bg-gray-50"
+                          >
+                            {/* Header med heatnummer och status/taktisk indikator */}
+                            <div className="flex items-center justify-between mb-3">
+                              <h4 className="font-semibold">
+                                Heat {heat.heat_number}
+                              </h4>
+                              <div className="flex items-center space-x-2">
+                                {heat.is_tactical_heat && (
+                                  <Badge className="bg-orange-500">
+                                    <Zap className="w-3 h-3 mr-1" /> Taktisk
+                                  </Badge>
+                                )}
+                                {getStatusBadge(heat.status)}
+                              </div>
                             </div>
-                          </div>
 
-                          <div className="grid grid-cols-2 gap-2 text-sm mb-3">
-                            {Object.keys(heat.riders)
-                              .sort()
-                              .map((gate) => {
-                                const rider = heat.riders[gate];
-                                const result = heat.results?.find(
-                                  (r) => r.rider_id === rider.rider_id
-                                );
+                            {/* Heatets fyra förare */}
+                            <div className="grid grid-cols-2 gap-2 text-sm mb-3">
+                              {Object.keys(heat.riders)
+                                .sort()
+                                .map((gate) => {
+                                  const rider = heat.riders[gate];
+                                  const result = heat.results?.find(
+                                    (r) => r.rider_id === rider.rider_id
+                                  );
+                                  const bonus = bonuses[rider.rider_id] || 0;
+                                  const team = rider.team; // "home" eller "away"
+                                  const options = ridersByTeam[team] || [];
 
-                                return (
-                                  <div
-                                    key={gate}
-                                    className={`text-center p-2 rounded ${getRiderGateStyle(
-                                      rider.team,
-                                      gate
-                                    )}`}
-                                  >
-                                    <div className="flex items-center justify-center space-x-1">
-                                      <span className="w-5 h-5 bg-gray-200 rounded-full text-xs flex items-center justify-center">
-                                        {gate}
-                                      </span>
-                                      <div
-                                        className="w-3 h-3 rounded-full border"
-                                        style={{
-                                          backgroundColor: rider.helmet_color,
-                                          borderColor:
-                                            rider.helmet_color === "#FFFFFF"
-                                              ? "#ccc"
-                                              : rider.helmet_color,
-                                        }}
-                                      ></div>
-                                    </div>
-                                    <div className="font-medium text-xs mt-1">
-                                      {rider.name}
-                                    </div>
-                                    {result && (
-                                      <div className="mt-1">
-                                        {result.status === "completed" && (
-                                          <Badge
-                                            className={`text-xs ${getPositionColor(
-                                              result.position
-                                            )}`}
+                                  return (
+                                    <div
+                                      key={gate}
+                                      className={`text-center p-2 rounded ${getRiderGateStyle(
+                                        rider.team,
+                                        gate
+                                      )}`}
+                                    >
+                                      {/* Visa gate‑nummer och hjälmfärg */}
+                                      <div className="flex items-center justify-center space-x-1">
+                                        <span className="w-5 h-5 bg-gray-200 rounded-full text-xs flex items-center justify-center">
+                                          {gate}
+                                        </span>
+                                        <div
+                                          className="w-3 h-3 rounded-full border"
+                                          style={{
+                                            backgroundColor: rider.helmet_color,
+                                            borderColor:
+                                              rider.helmet_color === "#FFFFFF"
+                                                ? "#ccc"
+                                                : rider.helmet_color,
+                                          }}
+                                        ></div>
+                                      </div>
+
+                                      {/* Förarnamn eller valbar lista om taktisk reserv tillåten */}
+                                      <div className="font-medium text-xs mt-1">
+                                        {heat.heat_number >= 5 &&
+                                        heat.heat_number <= 13 ? (
+                                          <select
+                                            value={rider.rider_id}
+                                            onChange={(e) =>
+                                              handleChangeRider(
+                                                heat.heat_number,
+                                                {
+                                                  [gate]: e.target.value,
+                                                }
+                                              )
+                                            }
+                                            className="text-xs"
                                           >
-                                            {result.position}. ({result.points}
-                                            p)
-                                          </Badge>
-                                        )}
-                                        {result.status === "excluded" && (
-                                          <Badge className="text-xs bg-red-600">
-                                            <AlertTriangle className="w-3 h-3" />
-                                          </Badge>
+                                            {options.map((opt) => (
+                                              <option
+                                                key={opt.id}
+                                                value={opt.id}
+                                              >
+                                                {opt.name}
+                                              </option>
+                                            ))}
+                                          </select>
+                                        ) : (
+                                          rider.name
                                         )}
                                       </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                          </div>
 
-                          {user && (
-                            <div className="flex space-x-2">
-                              {heat.status === "upcoming" && (
-                                <Button
-                                  onClick={() => openHeatResult(heat)}
-                                  size="sm"
-                                  className="flex-1"
-                                >
-                                  Registrera resultat
-                                </Button>
-                              )}
-                              {heat.status === "completed" &&
-                                currentMatch.status !== "confirmed" && (
+                                      {/* Resultat med poäng + bonus eller utesluten */}
+                                      {result && (
+                                        <div className="mt-1">
+                                          {result.status === "completed" && (
+                                            <Badge
+                                              className={`text-xs ${getPositionColor(
+                                                result.position
+                                              )}`}
+                                            >
+                                              {result.position}. (
+                                              {result.points}
+                                              {bonus ? `+${bonus}` : ""} p)
+                                            </Badge>
+                                          )}
+                                          {result.status === "excluded" && (
+                                            <Badge className="text-xs bg-red-600">
+                                              <AlertTriangle className="w-3 h-3" />
+                                            </Badge>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                            </div>
+
+                            {/* Knappar för att registrera eller redigera heatresultat */}
+                            {user && (
+                              <div className="flex space-x-2">
+                                {heat.status === "upcoming" && (
                                   <Button
-                                    onClick={() => editHeatResult(heat)}
+                                    onClick={() => openHeatResult(heat)}
                                     size="sm"
-                                    variant="outline"
                                     className="flex-1"
                                   >
-                                    <Edit className="w-3 h-3 mr-1" />
-                                    Redigera
+                                    Registrera resultat
                                   </Button>
                                 )}
-                            </div>
-                          )}
-                        </div>
-                      ))}
+                                {heat.status === "completed" &&
+                                  currentMatch.status !== "confirmed" && (
+                                    <Button
+                                      onClick={() => editHeatResult(heat)}
+                                      size="sm"
+                                      variant="outline"
+                                      className="flex-1"
+                                    >
+                                      <Edit className="w-3 h-3 mr-1" /> Redigera
+                                    </Button>
+                                  )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </CardContent>
                 </Card>
@@ -1683,7 +1822,7 @@ function App() {
                             </Select>
                           )}
 
-                          {(canUseJoker("home") || canUseJoker("away")) && (
+                          {/* {(canUseJoker("home") || canUseJoker("away")) && (
                             <Button
                               variant={
                                 jokerRider === rider.rider_id
@@ -1704,7 +1843,7 @@ function App() {
                               <Star className="w-3 h-3 mr-1" />
                               Joker
                             </Button>
-                          )}
+                          )} */}
                         </div>
                       </div>
                     );
