@@ -4,6 +4,8 @@
 # ENV
 .env
 
+hej.txt
+
 # IDE and editors
 .idea/
 .vscode/
