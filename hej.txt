@@ -1,5 +1,9 @@
 python -m uvicorn server_async:app --host 127.0.0.1 --port 8002
 
+stå /backend/
+kör VENV:
+.\venv\Scripts\Activate.ps1
+
 
 
 REACT_APP_BACKEND_URL=http://localhost:8002
