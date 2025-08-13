@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -52,7 +52,7 @@ app = FastAPI(title="Speedway Elitserien API (Async)")
 # Allow CORS from all origins (adjust in production)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # dev: sätt * om du vill
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -225,144 +225,7 @@ async def resolve_team_name(scraped_name: str) -> dict | None:
     return None
 
     
-async def get_owned_match_or_403(matches_collection, match_id: str, user_id: str):
-    match = await matches_collection.find_one({"id": match_id}, {"_id": 0})
-    if not match:
-        raise HTTPException(status_code=404, detail="Match hittades inte")
-    if match.get("created_by") != user_id:
-        raise HTTPException(status_code=403, detail="Inte behörig")
-    return match
-
-
-    # Antag att du har dessa Mongo-collections:
-# matches_collection, teams_collection, riders_collection
-# (om du saknar riders_collection, se fallback i get_team_roster)
-
-def _list_duplicates(seq: List[str]) -> List[str]:
-    seen, dups = set(), []
-    for x in seq:
-        if x in seen and x not in dups:
-            dups.append(x)
-        seen.add(x)
-    return dups
-
-def _heat_rider_ids(heat: Dict[str, Any]) -> List[str]:
-    riders = heat.get("riders") or {}
-    return [str(r.get("rider_id")) for r in riders.values()]
-
-def has_duplicate_riders(heat: Dict[str, Any]) -> bool:
-    ids = _heat_rider_ids(heat)
-    return len(ids) != len(set(ids))
-
-def validate_heat_unique_riders(heat: Dict[str, Any]) -> None:
-    if not heat or "riders" not in heat:
-        raise HTTPException(status_code=400, detail="Heat saknar riders.")
-    ids = _heat_rider_ids(heat)
-    dups = _list_duplicates(ids)
-    if dups:
-        hn = heat.get("heat_number")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Heat {hn} innehåller dublettförare: {', '.join(dups)}"
-        )
-
-async def get_team_roster(team_id: str) -> List[Dict[str, Any]]:
-    """
-    Returnerar lagets trupp som lista av dicts med minst {id, name}.
-    Försöker först riders_collection, annars fallback till team-dokumentet.
-    """
-    roster: List[Dict[str, Any]] = []
-
-    # 1) Försök hämta från separat riders-collection
-    if 'riders_collection' in globals() and riders_collection is not None:
-        cur = riders_collection.find({"team_id": team_id}, {"_id": 0, "id": 1, "name": 1})
-        roster = await cur.to_list(length=None)
-
-    # 2) Fallback: försök läsa in från team-dokument (t.ex. field "riders")
-    if not roster:
-        team_doc = await teams_collection.find_one({"id": team_id}, {"_id": 0})
-        raw = (team_doc or {}).get("riders") or []
-        # normalize
-        roster = [{"id": r.get("id"), "name": r.get("name")} for r in raw if r.get("id")]
-
-    # 3) Sista fallback: tom lista (hanteras i anropare)
-    return roster
-
-def _first_available(restrict_to: List[str], used: set) -> str | None:
-    for rid in restrict_to:
-        if str(rid) not in used:
-            return str(rid)
-    return None
-
-def enforce_unique_riders_in_heat(
-    heat: Dict[str, Any],
-    home_roster: List[Dict[str, Any]],
-    away_roster: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """
-    Ersätter ev. dublettförare med första lediga förare i samma lag.
-    Uppdaterar även 'name' om det finns i truppen.
-    """
-    if not heat or "riders" not in heat:
-        raise HTTPException(status_code=400, detail="Heat saknar riders.")
-
-    # Bygg lookup för snabb tillgång till namn
-    home_ids = [str(r["id"]) for r in home_roster if r.get("id") is not None]
-    away_ids = [str(r["id"]) for r in away_roster if r.get("id") is not None]
-    home_name = {str(r["id"]): r.get("name") for r in home_roster if r.get("id") is not None}
-    away_name = {str(r["id"]): r.get("name") for r in away_roster if r.get("id") is not None}
-
-    used: set = set()
-    # Sortera gates så vi får deterministisk ordning (1,2,3,4)
-    for gate in sorted(heat["riders"].keys(), key=lambda x: int(x)):
-        entry = heat["riders"][gate]
-        if not entry or "rider_id" not in entry or "team" not in entry:
-            raise HTTPException(status_code=400, detail=f"Gate {gate} i heat {heat.get('heat_number')} saknar rider_id/team.")
-
-        rid = str(entry["rider_id"])
-        side = entry["team"]  # "home" | "away"
-
-        if rid in used:
-            # Dublett → välj första lediga inom samma lag
-            if side == "home":
-                replacement = _first_available(home_ids, used)
-                if replacement is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Inga lediga förare i {side} för heat {heat.get('heat_number')}"
-                    )
-                entry["rider_id"] = replacement
-                # sätt name om vi vet det
-                if home_name.get(replacement):
-                    entry["name"] = home_name[replacement]
-                rid = replacement
-            else:
-                replacement = _first_available(away_ids, used)
-                if replacement is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Inga lediga förare i {side} för heat {heat.get('heat_number')}"
-                    )
-                entry["rider_id"] = replacement
-                if away_name.get(replacement):
-                    entry["name"] = away_name[replacement]
-                rid = replacement
-
-        used.add(rid)
-
-    # Sista koll – om något ändå dubblar, faila
-    validate_heat_unique_riders(heat)
-    return heat
-
-def enforce_unique_riders_in_all_heats(
-    heats: List[Dict[str, Any]],
-    home_roster: List[Dict[str, Any]],
-    away_roster: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    fixed: List[Dict[str, Any]] = []
-    for h in heats:
-        fixed.append(enforce_unique_riders_in_heat(h, home_roster, away_roster))
-    return fixed
+    
     
     
     
@@ -629,15 +492,6 @@ async def generate_match_heats(home_team_id: str, away_team_id: str) -> List[Dic
                         "helmet_color": away_colors[color_index],
                     }
         heats.append(heat)
-        
-        
-        # --- Lägg in garantin här ---
-    home_roster = await get_team_roster(home_team_id)
-    away_roster = await get_team_roster(away_team_id)
-    if not home_roster or not away_roster:
-        raise HTTPException(status_code=400, detail="Saknar komplett lagtrupp för home/away.")
-
-    heats = enforce_unique_riders_in_all_heats(heats, home_roster, away_roster)
     return heats
 
 
@@ -804,36 +658,6 @@ async def get_matches() -> List[Dict[str, Any]]:
         match.setdefault("official_match_id", None)
     return matches
 
-# @app.get("/api/matches")
-# async def get_matches(user_id: str = Depends(verify_jwt_token)) -> List[Dict[str, Any]]:
-#     """
-#     Return all matches created by the authenticated user, with human‑friendly team names.
-#     """
-#     matches_cursor = matches_collection.find({"created_by": user_id}, {"_id": 0})
-#     matches = await matches_cursor.to_list(length=None)
-#     # Enrich with team names
-#     for match in matches:
-#         home_team = await teams_collection.find_one({"id": match["home_team_id"]})
-#         away_team = await teams_collection.find_one({"id": match["away_team_id"]})
-#         match["home_team"] = home_team["name"] if home_team else "Okänt lag"
-#         match["away_team"] = away_team["name"] if away_team else "Okänt lag"
-#         match.setdefault("official_match_id", None)
-#     return matches
-
-# @app.get("/api/matches")
-# async def get_matches(user_id: str = Depends(verify_jwt_token)):
-#     # Om du vill lista BARA den inloggades matcher:
-#     matches_cursor = matches_collection.find({"created_by": user_id}, {"_id": 0})
-#     matches = await matches_cursor.to_list(length=None)
-#     # enricha namn
-#     for match in matches:
-#         home = await teams_collection.find_one({"id": match["home_team_id"]}, {"_id": 0, "name": 1})
-#         away = await teams_collection.find_one({"id": match["away_team_id"]}, {"_id": 0, "name": 1})
-#         match["home_team"] = home["name"] if home else "Okänt lag"
-#         match["away_team"] = away["name"] if away else "Okänt lag"
-#         match.setdefault("official_match_id", None)
-#     return matches
-
 
 @app.post("/api/matches")
 async def create_match(match_data: Dict[str, Any], user_id: str = Depends(verify_jwt_token)) -> Dict[str, Any]:
@@ -872,32 +696,17 @@ async def create_match(match_data: Dict[str, Any], user_id: str = Depends(verify
     return {"message": "Match skapad med förbestämda heat", "match_id": match_id}
 
 
-# @app.get("/api/matches/{match_id}")
-# async def get_match(match_id: str) -> Dict[str, Any]:
-#     """Return a specific match by id, enriched with team names."""
-#     match = await matches_collection.find_one({"id": match_id}, {"_id": 0})
-#     if not match:
-#         raise HTTPException(status_code=404, detail="Match hittades inte")
-#     home_team = await teams_collection.find_one({"id": match["home_team_id"]})
-#     away_team = await teams_collection.find_one({"id": match["away_team_id"]})
-#     match["home_team"] = home_team["name"] if home_team else "Okänt lag"
-#     match["away_team"] = away_team["name"] if away_team else "Okänt lag"
-#     return match
-
 @app.get("/api/matches/{match_id}")
-async def get_match(match_id: str, user_id: str = Depends(verify_jwt_token)):
-    match = await get_owned_match_or_403(matches_collection, match_id, user_id)
-
-    # enricha namn, men fortsätt utan _id:
-    home = await teams_collection.find_one({"id": match["home_team_id"]}, {"_id": 0, "name": 1})
-    away = await teams_collection.find_one({"id": match["away_team_id"]}, {"_id": 0, "name": 1})
-    match["home_team"] = home["name"] if home else "Okänt lag"
-    match["away_team"] = away["name"] if away else "Okänt lag"
-
-    # säkerhetsbälte: ta bort _id om det ändå skulle slinka med
-    match.pop("_id", None)
+async def get_match(match_id: str) -> Dict[str, Any]:
+    """Return a specific match by id, enriched with team names."""
+    match = await matches_collection.find_one({"id": match_id}, {"_id": 0})
+    if not match:
+        raise HTTPException(status_code=404, detail="Match hittades inte")
+    home_team = await teams_collection.find_one({"id": match["home_team_id"]})
+    away_team = await teams_collection.find_one({"id": match["away_team_id"]})
+    match["home_team"] = home_team["name"] if home_team else "Okänt lag"
+    match["away_team"] = away_team["name"] if away_team else "Okänt lag"
     return match
-
 
 
 @app.delete("/api/matches/{match_id}")
@@ -913,8 +722,6 @@ async def delete_match(match_id: str, user_id: str = Depends(verify_jwt_token)) 
         raise HTTPException(status_code=403, detail="Inte behörig att ta bort den här matchen")
     await matches_collection.delete_one({"id": match_id})
     return {"message": "Match borttagen"}
-
-
 
 
 @app.put("/api/matches/{match_id}/heat/{heat_number}/riders")
@@ -997,9 +804,6 @@ async def update_heat_result(match_id: str, heat_number: int, result_data: Dict[
     match = await matches_collection.find_one({"id": match_id})
     if not match:
         raise HTTPException(status_code=404, detail="Match hittades inte")
-
-    # if not match:
-    #     raise HTTPException(status_code=404, detail="Match hittades inte")
     # Locate the heat to update
     heat_index = None
     for i, heat in enumerate(match["heats"]):
@@ -1087,9 +891,6 @@ async def confirm_match(match_id: str, user_id: str = Depends(verify_jwt_token))
     match = await matches_collection.find_one({"id": match_id})
     if not match:
         raise HTTPException(status_code=404, detail="Match hittades inte")
-
-    # if not match:
-    #     raise HTTPException(status_code=404, detail="Match hittades inte")
     # Ensure all heats are completed
     completed_heats = sum(1 for heat in match["heats"] if heat.get("status") == "completed")
     if completed_heats < 15:
@@ -1327,10 +1128,7 @@ async def sync_teams_from_official() -> Dict[str, Any]:
 
 
 @app.post("/api/matches/from-official")
-async def create_match_from_official(
-    body: CreateFromOfficialIn,
-    user_id: str = Depends(verify_jwt_token)
-):
+async def create_match_from_official(body: CreateFromOfficialIn, user_id: str = Depends(verify_jwt_token)):
     official = await official_matches_collection.find_one({"id": body.official_match_id})
     if not official:
         raise HTTPException(status_code=404, detail="Official match saknas")
@@ -1340,11 +1138,16 @@ async def create_match_from_official(
     if not home or not away:
         raise HTTPException(status_code=400, detail="Kunde inte matcha lag mot databasen")
 
-    match_date = datetime.fromisoformat(
-        official["date"].replace("Z","+00:00")
-    ) if "Z" in official["date"] else datetime.fromisoformat(official["date"])
+    payload = {
+        "home_team_id": home["id"],
+        "away_team_id": away["id"],
+        "date": official["date"],
+        "venue": "",
+        "official_match_id": official["id"],
+    }
 
     # duplicate-guard (samma användare, lag och datum)
+    match_date = datetime.fromisoformat(official["date"].replace("Z","+00:00")) if "Z" in official["date"] else datetime.fromisoformat(official["date"])
     existing = await matches_collection.find_one({
         "created_by": user_id,
         "home_team_id": home["id"],
@@ -1352,23 +1155,11 @@ async def create_match_from_official(
         "date": match_date
     })
     if existing:
-        return {"message": "Match fanns redan", "match_id": existing["id"]}
+        return {"message":"Match fanns redan","match_id": existing["id"]}
 
-    # 1) Generera heats (din befintliga funktion)
-    heats: List[Dict[str, Any]] = await generate_match_heats(home["id"], away["id"])
+    # skapa heats via din befintliga funktion
+    heats = await generate_match_heats(home["id"], away["id"])
 
-    # 2) Ladda trupper för respektive lag
-    home_roster = await get_team_roster(home["id"])   # [{id, name}, ...]
-    away_roster = await get_team_roster(away["id"])   # [{id, name}, ...]
-
-    # Om trupp saknas är det bättre att tydligt faila än att skapa korrupt match
-    if not home_roster or not away_roster:
-        raise HTTPException(status_code=400, detail="Saknar komplett lagtrupp för home/away.")
-
-    # 3) Sanera & validera varje heat → ingen förare får förekomma 2 ggr i samma heat
-    heats = enforce_unique_riders_in_all_heats(heats, home_roster, away_roster)
-
-    # 4) Bygg och spara match
     match_id = str(uuid.uuid4())
     match_doc = {
         "id": match_id,
@@ -1380,7 +1171,7 @@ async def create_match_from_official(
         "home_score": 0,
         "away_score": 0,
         "heats": heats,
-        "created_by": user_id,          # <-- samma user_id som verify_jwt_token returnerar
+        "created_by": user_id,
         "created_at": datetime.utcnow(),
         "official_match_id": official["id"],
     }
