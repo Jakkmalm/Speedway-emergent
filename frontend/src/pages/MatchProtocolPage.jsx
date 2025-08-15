@@ -19,34 +19,31 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Trophy, Target, AlertTriangle } from "lucide-react";
 import HeatDialog from "@/components/HeatDialog";
+import NominationDialog from "@/components/NominationDialog";
 import { useAuth } from "../contexts/AuthContext";
 
 const API_BASE_URL =
   process.env.REACT_APP_BACKEND_URL || "http://localhost:8002";
 
-const TACTICAL_START_HEAT = 5; // första heat där taktisk reserv är tillåten
-const TACTICAL_END_HEAT = 13; // sista heat där taktisk reserv är tillåten
-const MIN_TACTICAL_DIFF = 6; // samma värde som tidigare
-
 // Summerar totaler från sparade heat i matchen
-const computeTotalsFromHeats = (match) => {
-  let home = 0,
-    away = 0;
-  if (!match?.heats) return { home, away };
-  for (const h of match.heats) {
-    if (!Array.isArray(h.results)) continue;
-    for (const res of h.results) {
-      const pts = Number(res.points) || 0;
-      const riderEntry = Object.values(h.riders || {}).find(
-        (g) => String(g?.rider_id) === String(res.rider_id)
-      );
-      const team = riderEntry?.team;
-      if (team === "home") home += pts;
-      else if (team === "away") away += pts;
-    }
-  }
-  return { home, away };
-};
+// const computeTotalsFromHeats = (match) => {
+//   let home = 0,
+//     away = 0;
+//   if (!match?.heats) return { home, away };
+//   for (const h of match.heats) {
+//     if (!Array.isArray(h.results)) continue;
+//     for (const res of h.results) {
+//       const pts = Number(res.points) || 0;
+//       const riderEntry = Object.values(h.riders || {}).find(
+//         (g) => String(g?.rider_id) === String(res.rider_id)
+//       );
+//       const team = riderEntry?.team;
+//       if (team === "home") home += pts;
+//       else if (team === "away") away += pts;
+//     }
+//   }
+//   return { home, away };
+// };
 
 export default function MatchProtocolPage() {
   const { id } = useParams();
@@ -54,13 +51,28 @@ export default function MatchProtocolPage() {
   const [loading, setLoading] = useState(true);
   const [match, setMatch] = useState(null);
   const [error, setError] = useState("");
-  const [ridersByTeam, setRidersByTeam] = useState({});
+  // const [ridersByTeam, setRidersByTeam] = useState({});
+  const [ridersByTeam, setRidersByTeam] = useState({ home: [], away: [] });
 
   // --- 8-poängsregel: state + helpers ---
   const [laneChoiceByHeat, setLaneChoiceByHeat] = useState({}); // "matchId#heat" -> { team:'home'|'away', pair:'13'|'24' }
   const [originalRidersByHeat, setOriginalRidersByHeat] = useState({}); // "matchId#heat" -> snapshot av ursprungliga riders
 
   const heatKeyOf = (matchId, heatNumber) => `${matchId}#${heatNumber}`;
+
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [selectedHeat, setSelectedHeat] = useState(null);
+
+  const [nomOpen, setNomOpen] = useState(false);
+
+  //
+  const getRules = (m) => m?.meta?.rules ?? {};
+  const tacticalRules = (m) => ({
+    enabled: getRules(m).tactical?.enabled ?? true,
+    start: getRules(m).tactical?.start_heat ?? 5,
+    end: getRules(m).tactical?.end_heat ?? 13,
+    minDef: getRules(m).tactical?.min_deficit ?? 6,
+  });
 
   // Gruppar alla unika förare per team
   const buildRidersByTeam = (match) => {
@@ -106,6 +118,7 @@ export default function MatchProtocolPage() {
     try {
       const data = await getMatchById(id);
       setMatch(data);
+      // setRidersByTeam(buildRidersByTeam(data)); // <-- viktig
     } catch (e) {
       // 403 betyder oftast “inte din match” → tillbaka till /matches
       if (e.status === 403) navigate("/matches");
@@ -235,15 +248,33 @@ export default function MatchProtocolPage() {
   );
 
   // Här definieras canUseTactical och används av HeatDialog
+  // const canUseTactical = useCallback(
+  //   (team) => {
+  //     if (!match) return false;
+  //     const diff = Math.abs(homeScore - awayScore);
+  //     const isLosing =
+  //       team === "home" ? homeScore < awayScore : awayScore < homeScore;
+  //     return diff >= MIN_TACTICAL_DIFF && isLosing;
+  //   },
+  //   [match, homeScore, awayScore]
+  // );
+
   const canUseTactical = useCallback(
     (team) => {
-      if (!match) return false;
-      const diff = Math.abs(homeScore - awayScore);
-      const isLosing =
-        team === "home" ? homeScore < awayScore : awayScore < homeScore;
-      return diff >= MIN_TACTICAL_DIFF && isLosing;
+      if (!match || !selectedHeat) return false;
+      const t = tacticalRules(match);
+      if (!t.enabled) return false;
+
+      const hn = selectedHeat.heat_number;
+      if (hn < t.start || hn > t.end) return false;
+
+      const { home, away } = computeTotalsFromHeats(match);
+      const diff = Math.abs(home - away);
+      const losing = team === "home" ? home < away : away < home;
+
+      return losing && diff >= t.minDef;
     },
-    [match, homeScore, awayScore]
+    [match, selectedHeat]
   );
 
   const formatDate = (dateString) =>
@@ -293,46 +324,38 @@ export default function MatchProtocolPage() {
 
   // spara (anropas av HeatDialog)
   const handleSave = useCallback(
-    async ({ assignments, results }) => {
+    async ({ heat_number, assignments, results }) => {
       if (!getToken()) {
         alert("Du måste vara inloggad för att spara resultat.");
         return;
       }
+      if (!match?.id || !heat_number) return;
 
       // 1) byt förare (om några)
       if (assignments && Object.keys(assignments).length > 0) {
-        await apiCall(
-          `/api/matches/${match.id}/heat/${selectedHeat.heat_number}/riders`,
-          {
-            method: "PUT",
-            body: JSON.stringify(assignments),
-          }
-        );
+        await apiCall(`/api/matches/${match.id}/heat/${heat_number}/riders`, {
+          method: "PUT",
+          body: JSON.stringify(assignments),
+        });
       }
 
       // 2) nollställ resultat
-      await apiCall(
-        `/api/matches/${match.id}/heat/${selectedHeat.heat_number}/result`,
-        {
-          method: "PUT",
-          body: JSON.stringify({ results: [] }),
-        }
-      );
+      await apiCall(`/api/matches/${match.id}/heat/${heat_number}/result`, {
+        method: "PUT",
+        body: JSON.stringify({ results: [] }),
+      });
 
       // 3) skriv nya resultat
-      await apiCall(
-        `/api/matches/${match.id}/heat/${selectedHeat.heat_number}/result`,
-        {
-          method: "PUT",
-          body: JSON.stringify({ results }),
-        }
-      );
+      await apiCall(`/api/matches/${match.id}/heat/${heat_number}/result`, {
+        method: "PUT",
+        body: JSON.stringify({ results }),
+      });
 
       // 4) hämta uppdaterad match
       const data = await apiCall(`/api/matches/${match.id}`);
       setMatch(data);
     },
-    [match?.id, selectedHeat?.heat_number]
+    [match?.id] // <-- selectedHeat tas bort ur dependencies
   );
 
   // const handleSave = useCallback(
@@ -368,6 +391,7 @@ export default function MatchProtocolPage() {
 
         const data = await getMatchById(id); // <-- går via apiCall -> skickar token
         if (!cancelled) setMatch(data);
+        // setRidersByTeam(buildRidersByTeam(data)); // <-- viktig
       } catch (e) {
         if (cancelled) return;
         // vår apiCall sätter e.status, e.message
@@ -386,6 +410,38 @@ export default function MatchProtocolPage() {
       cancelled = true;
     };
   }, [id, navigate]);
+
+  // ---- Ladda trupper för båda lagen när match finns ----
+  useEffect(() => {
+    let ignore = false;
+    async function loadRosters() {
+      if (!match?.home_team_id || !match?.away_team_id) return;
+      try {
+        const [home, away] = await Promise.all([
+          apiCall(`/api/teams/${match.home_team_id}/riders`),
+          apiCall(`/api/teams/${match.away_team_id}/riders`),
+        ]);
+        if (ignore) return;
+        const toOpts = (xs) =>
+          xs.map((r) => ({
+            id: String(r.id),
+            name: r.name,
+            lineup_no: r.lineup_no,
+            is_reserve: !!r.is_reserve,
+          }));
+        setRidersByTeam({
+          home: [...toOpts(home.mains || []), ...toOpts(home.reserves || [])],
+          away: [...toOpts(away.mains || []), ...toOpts(away.reserves || [])],
+        });
+      } catch (e) {
+        console.error("Kunde inte ladda trupper:", e);
+      }
+    }
+    loadRosters();
+    return () => {
+      ignore = true;
+    };
+  }, [match?.home_team_id, match?.away_team_id]);
 
   // === Render ===
   if (loading) {
@@ -429,6 +485,13 @@ export default function MatchProtocolPage() {
     <div className="space-y-6">
       {/* Match Header */}
       <Card>
+        {completedHeats >= 13 && (
+          <div className="flex justify-end">
+            <Button onClick={() => setNomOpen(true)}>
+              Nominera Heat 14–15
+            </Button>
+          </div>
+        )}
         <CardHeader>
           <CardTitle className="text-2xl flex items-center justify-between">
             <span>
@@ -573,8 +636,9 @@ export default function MatchProtocolPage() {
                       })}
                   </div>
 
-                  <div className="flex space-x-2">
+                  <div className="">
                     <Button
+                      className="w-full"
                       onClick={() => openDialogFor(heat)}
                       size="sm"
                       disabled={!canOpenThis}
@@ -586,11 +650,11 @@ export default function MatchProtocolPage() {
                     >
                       Registrera resultat
                     </Button>
-                    {heat.status === "completed" && (
+                    {/* {heat.status === "completed" && (
                       <Button size="sm" variant="outline">
                         Redigera
                       </Button>
-                    )}
+                    )} */}
                   </div>
                 </div>
               );
@@ -603,12 +667,15 @@ export default function MatchProtocolPage() {
         open={dialogOpen}
         onOpenChange={(o) => (o ? setDialogOpen(true) : closeDialog())}
         match={match}
-        heat={selectedHeat} // kan vara null en kort stund – komponenten har guards
+        heat={selectedHeat}
         ridersByTeam={ridersByTeam}
         canUseTactical={canUseTactical}
-        tacticalWindow={{ start: 5, end: 13 }}
+        tacticalWindow={{
+          start: tacticalRules(match).start,
+          end: tacticalRules(match).end,
+        }}
         heatSwapGuard={(liveHeat, draftRiders) => {
-          // enkel guard: tillåt högst ett byte per heat
+          // enkel guard i UI: max 1 byte visuellt
           let changed = 0;
           Object.keys(liveHeat?.riders || {}).forEach((g) => {
             const beforeId = String(liveHeat.riders[g]?.rider_id ?? "");
@@ -621,7 +688,16 @@ export default function MatchProtocolPage() {
           }
           return true;
         }}
-        onSave={handleSave} // din befintliga save-funktion
+        onSave={handleSave}
+      />
+      <NominationDialog
+        open={nomOpen}
+        onClose={() => setNomOpen(false)}
+        match={match}
+        onSaved={async () => {
+          // hämta om matchen efter save
+          await reloadMatch();
+        }}
       />
     </div>
   );

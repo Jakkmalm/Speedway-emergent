@@ -155,129 +155,129 @@
 #         "scraped_at": datetime.utcnow(),
 #         "heats": heats
 #     }
-import re
-from uuid import uuid4
-from typing import Optional, Dict, List
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
-from datetime import datetime
-from playwright.async_api import async_playwright, TimeoutError as PWTimeout
+# import re
+# from uuid import uuid4
+# from typing import Optional, Dict, List
+# from bs4 import BeautifulSoup
+# from urllib.parse import urljoin
+# from datetime import datetime
+# from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 
-BASE_URL = "https://ta.svemo.se"
-LISTING_URL = "https://www.svemo.se/vara-sportgrenar/start-speedway/resultat-speedway/resultat-bauhausligan-speedway"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-}
+# BASE_URL = "https://ta.svemo.se"
+# LISTING_URL = "https://www.svemo.se/vara-sportgrenar/start-speedway/resultat-speedway/resultat-bauhausligan-speedway"
+# HEADERS = {
+#     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+# }
 
 
-async def fetch_all_svemo_heats() -> List[Dict]:
+# async def fetch_all_svemo_heats() -> List[Dict]:
 
-    all_matches = []
-    seen_ids = set()
+#     all_matches = []
+#     seen_ids = set()
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(user_agent=HEADERS["User-Agent"])
-        page = await context.new_page()
+#     async with async_playwright() as p:
+#         browser = await p.chromium.launch(headless=True)
+#         context = await browser.new_context(user_agent=HEADERS["User-Agent"])
+#         page = await context.new_page()
 
-        print(f"[INFO] Går till startsida: {LISTING_URL}")
-        await page.goto(LISTING_URL, timeout=60000)
-        await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(3000)
+#         print(f"[INFO] Går till startsida: {LISTING_URL}")
+#         await page.goto(LISTING_URL, timeout=60000)
+#         await page.wait_for_load_state("networkidle")
+#         await page.wait_for_timeout(3000)
 
-        frames = page.frames
-        print(f"[DEBUG] Antal iframes: {len(frames)}")
+#         frames = page.frames
+#         print(f"[DEBUG] Antal iframes: {len(frames)}")
 
-        target_frame = None
-        for i, frame in enumerate(frames):
-            try:
-                content = await frame.content()
-                if "rgMasterTable" in content:
-                    print(f"[✅] Tabellen hittades i iframe index {i}")
-                    target_frame = frame
-                    break
-            except Exception as e:
-                print(f"[WARN] Kunde inte läsa frame {i}: {e}")
+#         target_frame = None
+#         for i, frame in enumerate(frames):
+#             try:
+#                 content = await frame.content()
+#                 if "rgMasterTable" in content:
+#                     print(f"[✅] Tabellen hittades i iframe index {i}")
+#                     target_frame = frame
+#                     break
+#             except Exception as e:
+#                 print(f"[WARN] Kunde inte läsa frame {i}: {e}")
 
-        if not target_frame:
-            print("[ERROR] ❌ Ingen iframe innehöll tabellen.")
-            return []
+#         if not target_frame:
+#             print("[ERROR] ❌ Ingen iframe innehöll tabellen.")
+#             return []
 
-        # Hämta total antal sidor
-        page_info_text = await target_frame.locator("div.rgWrap.rgInfoPart").inner_text()
-        match = re.search(r"(\d+)\s+pages", page_info_text)
-        max_pages = int(match.group(1)) if match else 1
-        print(f"[INFO] Totalt antal sidor: {max_pages}")
+#         # Hämta total antal sidor
+#         page_info_text = await target_frame.locator("div.rgWrap.rgInfoPart").inner_text()
+#         match = re.search(r"(\d+)\s+pages", page_info_text)
+#         max_pages = int(match.group(1)) if match else 1
+#         print(f"[INFO] Totalt antal sidor: {max_pages}")
 
-        current_page = 1
-        while True:
-            try:
-                await target_frame.wait_for_selector("table.rgMasterTable > tbody > tr", timeout=15000)
-            except PWTimeout:
-                print("[ERROR] ❌ Timeout vid tabellrader.")
-                break
+#         current_page = 1
+#         while True:
+#             try:
+#                 await target_frame.wait_for_selector("table.rgMasterTable > tbody > tr", timeout=15000)
+#             except PWTimeout:
+#                 print("[ERROR] ❌ Timeout vid tabellrader.")
+#                 break
 
-            rows = target_frame.locator("table.rgMasterTable > tbody > tr")
-            row_count = await rows.count()
-            print(f"[INFO] Rader hittade i iframe-tabell: {row_count}")
+#             rows = target_frame.locator("table.rgMasterTable > tbody > tr")
+#             row_count = await rows.count()
+#             print(f"[INFO] Rader hittade i iframe-tabell: {row_count}")
 
-            new_ids_found = False
-            for i in range(row_count):
-                row = rows.nth(i)
-                link = row.locator("td >> nth=3 >> a")
-                if await link.count() == 0:
-                    continue
+#             new_ids_found = False
+#             for i in range(row_count):
+#                 row = rows.nth(i)
+#                 link = row.locator("td >> nth=3 >> a")
+#                 if await link.count() == 0:
+#                     continue
 
-                heat_url = await link.get_attribute("href")
-                if not heat_url:
-                    continue
+#                 heat_url = await link.get_attribute("href")
+#                 if not heat_url:
+#                     continue
 
-                full_url = urljoin(BASE_URL, heat_url)
-                comp_id_match = re.search(r"CompetitionId=(\d+)", full_url)
-                if not comp_id_match:
-                    continue
+#                 full_url = urljoin(BASE_URL, heat_url)
+#                 comp_id_match = re.search(r"CompetitionId=(\d+)", full_url)
+#                 if not comp_id_match:
+#                     continue
 
-                competition_id = int(comp_id_match.group(1))
-                if competition_id in seen_ids:
-                    continue
+#                 competition_id = int(comp_id_match.group(1))
+#                 if competition_id in seen_ids:
+#                     continue
 
-                seen_ids.add(competition_id)
-                new_ids_found = True
+#                 seen_ids.add(competition_id)
+#                 new_ids_found = True
 
-                print(f"[INFO] Skrapar: {full_url}")
-                heat_data = await scrape_svemo_heat_page_playwright(context, full_url, competition_id)
-                if heat_data:
-                    all_matches.append(heat_data)
+#                 print(f"[INFO] Skrapar: {full_url}")
+#                 heat_data = await scrape_svemo_heat_page_playwright(context, full_url, competition_id)
+#                 if heat_data:
+#                     all_matches.append(heat_data)
 
-            # Stoppvillkor: inga nya ID:n eller nått sista sidan
-            if not new_ids_found:
-                print("[INFO] 🚫 Inga nya tävlingar hittades – avbryter.")
-                break
-            if current_page >= max_pages:
-                print(f"[INFO] ✅ Alla {max_pages} sidor besökta – klart.")
-                break
+#             # Stoppvillkor: inga nya ID:n eller nått sista sidan
+#             if not new_ids_found:
+#                 print("[INFO] 🚫 Inga nya tävlingar hittades – avbryter.")
+#                 break
+#             if current_page >= max_pages:
+#                 print(f"[INFO] ✅ Alla {max_pages} sidor besökta – klart.")
+#                 break
 
-            # Klicka på "Nästa sida"-knappen
-            try:
-                next_button = target_frame.locator("input.rgPageNext")
-                if await next_button.is_disabled():
-                    print("[INFO] 🛑 Nästa-knapp är inaktiverad – slut på sidor.")
-                    break
+#             # Klicka på "Nästa sida"-knappen
+#             try:
+#                 next_button = target_frame.locator("input.rgPageNext")
+#                 if await next_button.is_disabled():
+#                     print("[INFO] 🛑 Nästa-knapp är inaktiverad – slut på sidor.")
+#                     break
 
-                print("[INFO] ⏭️ Går till nästa sida...")
-                await next_button.click()
-                await target_frame.wait_for_load_state("networkidle")
-                await page.wait_for_timeout(3000)
-                current_page += 1
+#                 print("[INFO] ⏭️ Går till nästa sida...")
+#                 await next_button.click()
+#                 await target_frame.wait_for_load_state("networkidle")
+#                 await page.wait_for_timeout(3000)
+#                 current_page += 1
 
-            except Exception as e:
-                print(f"[ERROR] ❌ Kunde inte klicka vidare: {e}")
-                break
+#             except Exception as e:
+#                 print(f"[ERROR] ❌ Kunde inte klicka vidare: {e}")
+#                 break
 
-        await browser.close()
+#         await browser.close()
 
-    print(f"[DONE] Totalt antal heatmatcher: {len(all_matches)}")
-    return all_matches
+#     print(f"[DONE] Totalt antal heatmatcher: {len(all_matches)}")
+#     return all_matches
 
 
 

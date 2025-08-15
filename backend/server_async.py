@@ -21,13 +21,17 @@ import uuid
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from motor.motor_asyncio import AsyncIOMotorClient
 import jwt
 import bcrypt
+from helpers.schedule_elit import ELITSERIEN_2_15_7, COLOR_TO_TEAM, COLOR_TO_HELMET
+from services.meta_rules import DEFAULT_RULES
+
+
 
 # Environment variables and constants
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
@@ -49,11 +53,16 @@ official_heats_collection = db["official_heats"]
 # FastAPI app setup
 app = FastAPI(title="Speedway Elitserien API (Async)")
 
+FRONTEND_ORIGINS = [
+    "http://localhost:3000",   # Vite/CRA dev
+    # lägg till fler origins här vid behov
+]
+
 # Allow CORS from all origins (adjust in production)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # dev: sätt * om du vill
-    allow_credentials=True,
+    allow_origins=FRONTEND_ORIGINS,  
+    allow_credentials=True,   # kräver att allow_origins INTE är "*"
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -265,28 +274,69 @@ def validate_heat_unique_riders(heat: Dict[str, Any]) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Heat {hn} innehåller dublettförare: {', '.join(dups)}"
         )
+        
+        
+        
+# Recursively convert MongoDB ObjectId and other IDs to strings  ------- GPT TYCKTE DET        
+        
+def to_str_id(x):
+    if isinstance(x, dict):
+        out = {}
+        for k, v in x.items():
+            if k in ("_id", "id"):
+                out[k] = str(v)
+            else:
+                out[k] = to_str_id(v)
+        return out
+    elif isinstance(x, list):
+        return [to_str_id(i) for i in x]
+    else:
+        return x
+        
 
-async def get_team_roster(team_id: str) -> List[Dict[str, Any]]:
+
+#SKA UPPDATERAS!
+
+async def get_team_roster(team_id: str) -> Dict[str, List[Dict[str, Any]]]:
     """
-    Returnerar lagets trupp som lista av dicts med minst {id, name}.
-    Försöker först riders_collection, annars fallback till team-dokumentet.
+    Returnerar {"mains":[...], "reserves":[...]} för angivet lag.
+    Varje rider: {id, name, lineup_no, is_reserve}
+    lineup_no hämtas från fältet "number" om det finns, annars faller vi tillbaka.
     """
-    roster: List[Dict[str, Any]] = []
+    riders = await riders_collection.find({"team_id": team_id}, {"_id": 0}).to_list(length=None)
+    mains: List[Dict[str, Any]] = []
+    reserves: List[Dict[str, Any]] = []
+    for r in riders:
+        lineup_no = r.get("lineup_no") or r.get("number") or None
+        item = {
+            "id": str(r["id"]),
+            "name": r.get("name", ""),
+            "lineup_no": int(lineup_no) if lineup_no is not None else None,
+            "is_reserve": bool(r.get("is_reserve", False)),
+        }
+        (reserves if item["is_reserve"] else mains).append(item)
 
-    # 1) Försök hämta från separat riders-collection
-    if 'riders_collection' in globals() and riders_collection is not None:
-        cur = riders_collection.find({"team_id": team_id}, {"_id": 0, "id": 1, "name": 1})
-        roster = await cur.to_list(length=None)
+    # sortera på lineup_no om möjligt
+    mains.sort(key=lambda x: (x["lineup_no"] is None, x["lineup_no"]))
+    reserves.sort(key=lambda x: (x["lineup_no"] is None, x["lineup_no"]))
 
-    # 2) Fallback: försök läsa in från team-dokument (t.ex. field "riders")
-    if not roster:
-        team_doc = await teams_collection.find_one({"id": team_id}, {"_id": 0})
-        raw = (team_doc or {}).get("riders") or []
-        # normalize
-        roster = [{"id": r.get("id"), "name": r.get("name")} for r in raw if r.get("id")]
+    return {"mains": mains, "reserves": reserves}
 
-    # 3) Sista fallback: tom lista (hanteras i anropare)
-    return roster
+
+
+
+#TSM MED GET_TEAM_ROSTER KODEN
+
+def _pick_rider_by_lineup(roster: Dict[str, List[Dict[str, Any]]], num: int) -> Dict[str, Any]:
+    if 1 <= num <= 5:
+        xs = [r for r in roster["mains"] if int(r.get("lineup_no") or 0) == num]
+        if xs: return xs[0]
+    elif num in (6, 7):
+        xs = [r for r in roster["reserves"] if int(r.get("lineup_no") or 0) == num]
+        if xs: return xs[0]
+    raise HTTPException(status_code=400, detail=f"Saknar förare med lineup_no {num}")
+
+
 
 def _first_available(restrict_to: List[str], used: set) -> str | None:
     for rid in restrict_to:
@@ -436,48 +486,121 @@ TEAM_CITIES: Dict[str, str] = {
     "Västervik": "Västervik",
 }
 
-async def seed_teams_and_riders() -> None:
-    """
-    Seed the database with teams and riders for the 2025 Elitserien season.
+# async def seed_teams_and_riders() -> None:
+#     """
+#     Seed the database with teams and riders for the 2025 Elitserien season.
 
-    This function checks if the teams collection is empty and, if so,
-    inserts all teams listed in ROSTERS_2025 along with their riders into
-    the database.  Each rider will have a unique ID, reference its
-    team's ID via `team_id`, and include a sequential `number` field
-    based on the order in the roster.  The first six riders are
-    considered main riders (`is_reserve=False`) and the rest are
-    reserves (`is_reserve=True`).  Helmet colors are left blank; they
-    will be assigned dynamically in the heat generation.
+#     This function checks if the teams collection is empty and, if so,
+#     inserts all teams listed in ROSTERS_2025 along with their riders into
+#     the database.  Each rider will have a unique ID, reference its
+#     team's ID via `team_id`, and include a sequential `number` field
+#     based on the order in the roster.  The first six riders are
+#     considered main riders (`is_reserve=False`) and the rest are
+#     reserves (`is_reserve=True`).  Helmet colors are left blank; they
+#     will be assigned dynamically in the heat generation.
+#     """
+#     # Only seed if no teams exist
+#     existing_team_count = await teams_collection.count_documents({})
+#     if existing_team_count > 0:
+#         return
+#     teams_to_insert: List[Dict[str, Any]] = []
+#     riders_to_insert: List[Dict[str, Any]] = []
+#     for team_name, rider_names in ROSTERS_2025.items():
+#         team_id = str(uuid.uuid4())
+#         teams_to_insert.append({
+#             "id": team_id,
+#             "name": team_name,
+#             "city": TEAM_CITIES.get(team_name, ""),
+#             "points": 0,
+#             "matches_played": 0,
+#         })
+#         for idx, rider_name in enumerate(rider_names):
+#             riders_to_insert.append({
+#                 "id": str(uuid.uuid4()),
+#                 "name": rider_name,
+#                 "team_id": team_id,
+#                 "number": idx + 1,
+#                 "helmet_color": "",  # assigned during heat generation
+#                 "is_reserve": idx >= 5,  # first 5 are main riders
+#             })
+#     if teams_to_insert:
+#         await teams_collection.insert_many(teams_to_insert)
+#     if riders_to_insert:
+#         await riders_collection.insert_many(riders_to_insert)
+#     return
+
+import uuid
+from typing import Dict, List, Any
+
+async def seed_teams_and_riders() -> Dict[str, int]:
     """
-    # Only seed if no teams exist
-    existing_team_count = await teams_collection.count_documents({})
-    if existing_team_count > 0:
-        return
-    teams_to_insert: List[Dict[str, Any]] = []
+#     Seed the database with teams and riders for the 2025 Elitserien season.
+
+#     This function checks if the teams collection is empty and, if so,
+#     inserts all teams listed in ROSTERS_2025 along with their riders into
+#     the database.  Each rider will have a unique ID, reference its
+#     team's ID via `team_id`, and include a sequential `number` field
+#     based on the order in the roster.  The first five riders are
+#     considered main riders (`is_reserve=False`) and the rest are
+#     reserves (`is_reserve=True`).  Helmet colors are left blank; they
+#     will be assigned dynamically in the heat generation.
+#     """
+    created_teams = 0
+    inserted_riders = 0
+
+    # 1) Hämta befintliga lag och bygg name -> id-map
+    existing_teams = await teams_collection.find({}, {"id": 1, "name": 1}).to_list(length=None)
+    team_id_by_name: Dict[str, str] = {t["name"]: t["id"] for t in existing_teams}
+
+    # 2) Skapa saknade lag från ROSTERS_2025
+    new_teams: List[Dict[str, Any]] = []
+    for team_name in ROSTERS_2025.keys():
+        if team_name not in team_id_by_name:
+            team_id = str(uuid.uuid4())
+            team_id_by_name[team_name] = team_id
+            new_teams.append({
+                "id": team_id,
+                "name": team_name,
+                "city": TEAM_CITIES.get(team_name, ""),
+                "points": 0,
+                "matches_played": 0,
+            })
+
+    if new_teams:
+        res = await teams_collection.insert_many(new_teams)
+        created_teams = len(res.inserted_ids)
+
+    # 3) Lägg till saknade förare per lag
     riders_to_insert: List[Dict[str, Any]] = []
     for team_name, rider_names in ROSTERS_2025.items():
-        team_id = str(uuid.uuid4())
-        teams_to_insert.append({
-            "id": team_id,
-            "name": team_name,
-            "city": TEAM_CITIES.get(team_name, ""),
-            "points": 0,
-            "matches_played": 0,
-        })
+        team_id = team_id_by_name.get(team_name)
+        if not team_id:
+            continue  # borde inte hända, men skydd
+
+        # vilka förare finns redan för det här laget?
+        existing_riders = await riders_collection.find(
+            {"team_id": team_id}, {"name": 1}
+        ).to_list(length=None)
+        existing_names = {r["name"] for r in existing_riders}
+
         for idx, rider_name in enumerate(rider_names):
+            if rider_name in existing_names:
+                continue
             riders_to_insert.append({
                 "id": str(uuid.uuid4()),
                 "name": rider_name,
                 "team_id": team_id,
                 "number": idx + 1,
-                "helmet_color": "",  # assigned during heat generation
-                "is_reserve": idx >= 6,
+                "helmet_color": "",        # sätts senare i heat-generation
+                "is_reserve": idx >= 5,    # första 5 ordinarie
             })
-    if teams_to_insert:
-        await teams_collection.insert_many(teams_to_insert)
+
     if riders_to_insert:
-        await riders_collection.insert_many(riders_to_insert)
-    return
+        res = await riders_collection.insert_many(riders_to_insert)
+        inserted_riders = len(res.inserted_ids)
+
+    return {"created_teams": created_teams, "inserted_riders": inserted_riders}
+
 
 
 async def generate_default_heats(home_team_id: str, away_team_id: str) -> List[Dict[str, Any]]:
@@ -539,106 +662,209 @@ async def generate_default_heats(home_team_id: str, away_team_id: str) -> List[D
 # ---------------------------------------------------------------------------
 # The generate_default_heats() function above exists for backwards
 # compatibility only.  In modern Elitserien rules we expect each team to
-# register at least six regular riders plus a reserve in the database
+# register at least 5 regular riders plus 2 reserves in the database
 # before matches are created.  As such, fallback to placeholder riders
 # should be avoided.  The generate_match_heats() function (see below)
 # checks if enough riders exist and will raise an exception instead of
 # calling this fallback.
 
 
-async def generate_match_heats(home_team_id: str, away_team_id: str) -> List[Dict[str, Any]]:
-    """
-    Generate the 15 predetermined heats for a speedway match.
 
-    This version fetches riders asynchronously. If insufficient riders exist,
-    fallback to default heats.
-    """
-    # Fetch up to 6 main riders and one reserve for each team
-    home_riders = await riders_collection.find({"team_id": home_team_id, "is_reserve": False}).to_list(length=6)
-    home_reserve = await riders_collection.find_one({"team_id": home_team_id, "is_reserve": True})
-    away_riders = await riders_collection.find({"team_id": away_team_id, "is_reserve": False}).to_list(length=6)
-    away_reserve = await riders_collection.find_one({"team_id": away_team_id, "is_reserve": True})
+async def generate_match_heats(home_team_id: str, away_team_id: str, rules: Dict[str, Any]) -> List[Dict[str, Any]]:
+    home = await get_team_roster(home_team_id)
+    away = await get_team_roster(away_team_id)
 
-    # If either team has fewer than 6 registered riders (excluding reserves),
-    # we cannot construct a valid heat program.  According to modern
-    # Elitserien rules, matches must be composed using the registered
-    # riders for each team.  Therefore, raise an error to prompt the
-    # administrator to seed the riders collection properly instead of
-    # falling back to placeholder riders.
-    if len(home_riders) < 6 or len(away_riders) < 6:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Insufficient riders for one or both teams; each team must have at least "
-                "six registered riders plus a reserve in the database before creating a match."
-            ),
-        )
-
-    # Predefined gate assignments for 15 heats
-    heat_program = [
-        {"heat": 1, "gates": {"1": 0, "2": 0, "3": 1, "4": 1}},
-        {"heat": 2, "gates": {"1": 1, "2": 2, "3": 0, "4": 2}},
-        {"heat": 3, "gates": {"1": 2, "2": 1, "3": 3, "4": 0}},
-        {"heat": 4, "gates": {"1": 3, "2": 3, "3": 2, "4": 4}},
-        {"heat": 5, "gates": {"1": 4, "2": 0, "3": 5, "4": 3}},
-        {"heat": 6, "gates": {"1": 5, "2": 5, "3": 4, "4": 1}},
-        {"heat": 7, "gates": {"1": 0, "2": 4, "3": 1, "4": 5}},
-        {"heat": 8, "gates": {"1": 1, "2": 3, "3": 2, "4": 0}},
-        {"heat": 9, "gates": {"1": 2, "2": 2, "3": 3, "4": 3}},
-        {"heat": 10, "gates": {"1": 3, "2": 1, "3": 4, "4": 2}},
-        {"heat": 11, "gates": {"1": 4, "2": 5, "3": 5, "4": 4}},
-        {"heat": 12, "gates": {"1": 5, "2": 0, "3": 0, "4": 1}},
-        {"heat": 13, "gates": {"1": 0, "2": 2, "3": 1, "4": 3}},
-        {"heat": 14, "gates": {"1": 1, "2": 4, "3": 2, "4": 5}},
-        {"heat": 15, "gates": {"1": 2, "2": 1, "3": 3, "4": 0}},
-    ]
-
-    home_colors = get_team_colors("home")
-    away_colors = get_team_colors("away")
+    if len(home["mains"]) < 5 or len(away["mains"]) < 5:
+        raise HTTPException(status_code=400, detail="Varje lag måste ha minst 5 ordinarie förare registrerade.")
 
     heats: List[Dict[str, Any]] = []
-    for heat_info in heat_program:
-        heat: Dict[str, Any] = {
-            "heat_number": heat_info["heat"],
-            "riders": {},
+
+    for heat_no, g1, g2, g3, g4 in ELITSERIEN_2_15_7:
+        
+        # SUDDAR SÅLÄNGE; TESTAR KODEN UNDER
+        # def parse(cell: str, gate: str) -> Dict[str, Any]:
+        #     parts = cell.split("/")
+        #     if len(parts) == 1:
+        #         # t.ex. "R5"
+        #         color = parts[0][0]
+        #         num = int(parts[0][1:])
+        #         team = COLOR_TO_TEAM[color]
+        #         rider = _pick_rider_by_lineup(home if team=="home" else away, num)
+        #         return {
+        #             "rider_id": str(rider["id"]),
+        #             "name": rider["name"],
+        #             "team": team,
+        #             "helmet_color": COLOR_TO_HELMET[color],
+        #             "lineup_no": num,
+        #             "is_reserve": bool(rider.get("is_reserve", num in (6, 7))),
+        #             # ”Reservernas 3 schemalagda heat är låsta”
+        #             "locked": bool(num in (6, 7)),
+        #         }
+        #     else:
+        #         # nominering (heat 14–15) – placeholder, sätts efter heat 13
+        #         colorA, colorB = parts[0], parts[1]
+        #         team = COLOR_TO_TEAM[colorA]
+        #         return {
+        #             "rider_id": None,
+        #             "name": None,
+        #             "team": team,
+        #             "helmet_color": None,
+        #             "lineup_no": None,
+        #             "is_reserve": False,
+        #             "locked": False,
+        #             "color_choices": [COLOR_TO_HELMET[colorA], COLOR_TO_HELMET[colorB]],
+        #         }
+        
+        
+        #TEST 
+        def parse(cell: str, gate: str) -> Dict[str, Any]:
+        # "R5" => en specifik ordinarie/reserv enligt lineup_no
+            if "/" not in cell:
+                color = cell[0]
+                num = int(cell[1:])
+                team_key = COLOR_TO_TEAM[color]  # "home" för R/B, "away" för G/V
+                rider = _pick_rider_by_lineup(home if team_key == "home" else away, num)
+                return {
+                "rider_id": str(rider["id"]),
+                "name": rider["name"],
+                "team": team_key,
+                "helmet_color": COLOR_TO_HELMET[color],
+                "lineup_no": num,
+                "is_reserve": bool(rider.get("is_reserve", num in (6, 7))),
+                "locked": bool(num in (6, 7)),  # reservernas schemalagda heat är låsta
+                }   
+
+        # Nominering (14–15): cell t.ex. "V/R" eller "B/G"
+        # Här sätter vi INTE team; det görs först när nomineringen skickas in.
+            c1, c2 = cell.split("/")
+            return {
+                "rider_id": None,
+                "name": None,
+                "team": None,                 # ← viktigt: inget lag bestämt här
+                "helmet_color": None,         # sätts vid nominering
+                "lineup_no": None,
+                "is_reserve": False,
+                "locked": False,
+                # spara färgbokstäverna så vi kan mappa till team/färg sen
+                "color_choices": [c1, c2],    # t.ex. ["V","R"] eller ["G","B"]
+            }
+
+        riders = {
+            "1": parse(g1, "1"),
+            "2": parse(g2, "2"),
+            "3": parse(g3, "3"),
+            "4": parse(g4, "4"),
+        }
+
+        heats.append({
+            "heat_number": heat_no,
+            "riders": riders,
             "results": [],
             "status": "upcoming",
-            "joker_rider": None,
-            "is_tactical_heat": heat_info["heat"] == 15,
-        }
-        for gate, rider_index in heat_info["gates"].items():
-            gate_int = int(gate)
-            if gate_int in (1, 3):  # Home team gates
-                if rider_index < len(home_riders):
-                    color_index = 0 if gate_int == 1 else 1
-                    rider = home_riders[rider_index]
-                    heat["riders"][gate] = {
-                        "rider_id": rider["id"],
-                        "name": rider["name"],
-                        "team": "home",
-                        "helmet_color": home_colors[color_index],
-                    }
-            else:  # Away team gates (2, 4)
-                if rider_index < len(away_riders):
-                    color_index = 0 if gate_int == 2 else 1
-                    rider = away_riders[rider_index]
-                    heat["riders"][gate] = {
-                        "rider_id": rider["id"],
-                        "name": rider["name"],
-                        "team": "away",
-                        "helmet_color": away_colors[color_index],
-                    }
-        heats.append(heat)
-        
-        
-        # --- Lägg in garantin här ---
-    home_roster = await get_team_roster(home_team_id)
-    away_roster = await get_team_roster(away_team_id)
-    if not home_roster or not away_roster:
-        raise HTTPException(status_code=400, detail="Saknar komplett lagtrupp för home/away.")
+        })
 
-    heats = enforce_unique_riders_in_all_heats(heats, home_roster, away_roster)
     return heats
+
+
+
+
+
+
+#KOMMENTERAR UT DETTA SÅ LÄNGE, SKA FUNKA TSM MED NYA GET_TEAM_ROSTER ----------------------KODEN ÖVER
+
+# async def generate_match_heats(home_team_id: str, away_team_id: str) -> List[Dict[str, Any]]:
+#     """
+#     Generate the 15 predetermined heats for a speedway match.
+
+#     This version fetches riders asynchronously. If insufficient riders exist,
+#     fallback to default heats.
+#     """
+#     # Fetch up to 5 main riders and 2 reserve for each team
+#     home_riders = await riders_collection.find({"team_id": home_team_id, "is_reserve": False}).to_list(length=5)
+#     home_reserve = await riders_collection.find_one({"team_id": home_team_id, "is_reserve": True})
+#     away_riders = await riders_collection.find({"team_id": away_team_id, "is_reserve": False}).to_list(length=5)
+#     away_reserve = await riders_collection.find_one({"team_id": away_team_id, "is_reserve": True})
+
+#     # If either team has fewer than 5 registered riders (excluding reserves),
+#     # we cannot construct a valid heat program.  According to modern
+#     # Elitserien rules, matches must be composed using the registered
+#     # riders for each team.  Therefore, raise an error to prompt the
+#     # administrator to seed the riders collection properly instead of
+#     # falling back to placeholder riders.
+#     if len(home_riders) < 5 or len(away_riders) < 5:
+#         raise HTTPException(
+#             status_code=400,
+#             detail=(
+#                 "Insufficient riders for one or both teams; each team must have at least "
+#                 "5 registered riders plus 2 reserves in the database before creating a match."
+#             ),
+#         )
+
+#     # Predefined gate assignments for 15 heats
+#     heat_program = [
+#         {"heat": 1, "gates": {"1": 0, "2": 0, "3": 1, "4": 1}},
+#         {"heat": 2, "gates": {"1": 1, "2": 2, "3": 0, "4": 2}},
+#         {"heat": 3, "gates": {"1": 2, "2": 1, "3": 3, "4": 0}},
+#         {"heat": 4, "gates": {"1": 3, "2": 3, "3": 2, "4": 4}},
+#         {"heat": 5, "gates": {"1": 4, "2": 0, "3": 5, "4": 3}},
+#         {"heat": 6, "gates": {"1": 5, "2": 5, "3": 4, "4": 1}},
+#         {"heat": 7, "gates": {"1": 0, "2": 4, "3": 1, "4": 5}},
+#         {"heat": 8, "gates": {"1": 1, "2": 3, "3": 2, "4": 0}},
+#         {"heat": 9, "gates": {"1": 2, "2": 2, "3": 3, "4": 3}},
+#         {"heat": 10, "gates": {"1": 3, "2": 1, "3": 4, "4": 2}},
+#         {"heat": 11, "gates": {"1": 4, "2": 5, "3": 5, "4": 4}},
+#         {"heat": 12, "gates": {"1": 5, "2": 0, "3": 0, "4": 1}},
+#         {"heat": 13, "gates": {"1": 0, "2": 2, "3": 1, "4": 3}},
+#         {"heat": 14, "gates": {"1": 1, "2": 4, "3": 2, "4": 5}},
+#         {"heat": 15, "gates": {"1": 2, "2": 1, "3": 3, "4": 0}},
+#     ]
+
+#     home_colors = get_team_colors("home")
+#     away_colors = get_team_colors("away")
+
+#     heats: List[Dict[str, Any]] = []
+#     for heat_info in heat_program:
+#         heat: Dict[str, Any] = {
+#             "heat_number": heat_info["heat"],
+#             "riders": {},
+#             "results": [],
+#             "status": "upcoming",
+#             "joker_rider": None,
+#             "is_tactical_heat": heat_info["heat"] == 15,
+#         }
+#         for gate, rider_index in heat_info["gates"].items():
+#             gate_int = int(gate)
+#             if gate_int in (1, 3):  # Home team gates
+#                 if rider_index < len(home_riders):
+#                     color_index = 0 if gate_int == 1 else 1
+#                     rider = home_riders[rider_index]
+#                     heat["riders"][gate] = {
+#                         "rider_id": rider["id"],
+#                         "name": rider["name"],
+#                         "team": "home",
+#                         "helmet_color": home_colors[color_index],
+#                     }
+#             else:  # Away team gates (2, 4)
+#                 if rider_index < len(away_riders):
+#                     color_index = 0 if gate_int == 2 else 1
+#                     rider = away_riders[rider_index]
+#                     heat["riders"][gate] = {
+#                         "rider_id": rider["id"],
+#                         "name": rider["name"],
+#                         "team": "away",
+#                         "helmet_color": away_colors[color_index],
+#                     }
+#         heats.append(heat)
+        
+        
+#         # --- Lägg in garantin här ---
+#     home_roster = await get_team_roster(home_team_id)
+#     away_roster = await get_team_roster(away_team_id)
+#     if not home_roster or not away_roster:
+#         raise HTTPException(status_code=400, detail="Saknar komplett lagtrupp för home/away.")
+
+#     heats = enforce_unique_riders_in_all_heats(heats, home_roster, away_roster)
+#     return heats
 
 
 ###########################
@@ -759,12 +985,43 @@ async def get_team(team_id: str) -> Dict[str, Any]:
     return team
 
 
+# @app.get("/api/teams/{team_id}/riders")
+# async def get_team_riders(team_id: str) -> List[Dict[str, Any]]:
+#     """Return all riders belonging to a team."""
+#     riders_cursor = riders_collection.find({"team_id": team_id}, {"_id": 0})
+#     riders = await riders_cursor.to_list(length=None)
+#     return riders
+
+#UPPDATERAD
 @app.get("/api/teams/{team_id}/riders")
-async def get_team_riders(team_id: str) -> List[Dict[str, Any]]:
-    """Return all riders belonging to a team."""
-    riders_cursor = riders_collection.find({"team_id": team_id}, {"_id": 0})
-    riders = await riders_cursor.to_list(length=None)
-    return riders
+async def get_team_riders(team_id: str) -> Dict[str, Any]:
+    """
+    Returnerar truppen uppdelad i mains(1–5) och reserves(6–7).
+    Varje rider har: id, name, team_id, lineup_no, is_reserve.
+    """
+    cur = riders_collection.find({"team_id": team_id}, {"_id": 0})
+    xs = await cur.to_list(length=None)
+
+    def to_item(r):
+        # finns både "number" och ev. "lineup_no" i din DB – normalisera:
+        lineup_no = r.get("lineup_no") or r.get("number")
+        return {
+            "id": str(r["id"]),
+            "name": r["name"],
+            "team_id": r["team_id"],
+            "lineup_no": int(lineup_no) if lineup_no else None,
+            "is_reserve": bool(r.get("is_reserve", False)),
+        }
+
+    mains = [to_item(r) for r in xs if not r.get("is_reserve", False)]
+    reserves = [to_item(r) for r in xs if r.get("is_reserve", False)]
+
+    # säkra sort: mains efter lineup_no 1..5, reserves 6..7
+    mains.sort(key=lambda r: (r["lineup_no"] is None, r["lineup_no"]))
+    reserves.sort(key=lambda r: (r["lineup_no"] is None, r["lineup_no"]))
+
+    return {"mains": mains, "reserves": reserves}
+
 
 # ---------------------------------------------------------------------------
 # Riders endpoints
@@ -834,15 +1091,50 @@ async def get_matches() -> List[Dict[str, Any]]:
 #         match.setdefault("official_match_id", None)
 #     return matches
 
+#-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
+# @app.post("/api/matches")
+# async def create_match(match_data: Dict[str, Any], user_id: str = Depends(verify_jwt_token)) -> Dict[str, Any]:
+#     """
+#     Create a new match with 15 predetermined heats. A user cannot create
+#     duplicate matches for the same teams and date.
+#     """
+#     # Normalize the date and check for duplicates
+#     match_date = datetime.fromisoformat(match_data["date"].replace("Z", "+00:00"))
+#     existing = await matches_collection.find_one({
+#         "created_by": user_id,
+#         "home_team_id": match_data["home_team_id"],
+#         "away_team_id": match_data["away_team_id"],
+#         "date": match_date,
+#     })
+#     if existing:
+#         raise HTTPException(status_code=400, detail="Du har redan lagt till den här matchen.")
+
+#     match_id = str(uuid.uuid4())
+#     heats = await generate_match_heats(match_data["home_team_id"], match_data["away_team_id"])
+#     match_doc = {
+#         "id": match_id,
+#         "home_team_id": match_data["home_team_id"],
+#         "away_team_id": match_data["away_team_id"],
+#         "date": match_date,
+#         "venue": match_data.get("venue", ""),
+#         "status": "upcoming",
+#         "home_score": 0,
+#         "away_score": 0,
+#         "heats": heats,
+#         "created_by": user_id,
+#         "created_at": datetime.utcnow(),
+#         "official_match_id": match_data.get("official_match_id"),
+#     }
+#     await matches_collection.insert_one(match_doc)
+#     return {"message": "Match skapad med förbestämda heat", "match_id": match_id}
+
+
+# NY @app.post("/api/matches") MED META.RULES
 @app.post("/api/matches")
 async def create_match(match_data: Dict[str, Any], user_id: str = Depends(verify_jwt_token)) -> Dict[str, Any]:
-    """
-    Create a new match with 15 predetermined heats. A user cannot create
-    duplicate matches for the same teams and date.
-    """
-    # Normalize the date and check for duplicates
     match_date = datetime.fromisoformat(match_data["date"].replace("Z", "+00:00"))
+
     existing = await matches_collection.find_one({
         "created_by": user_id,
         "home_team_id": match_data["home_team_id"],
@@ -853,7 +1145,14 @@ async def create_match(match_data: Dict[str, Any], user_id: str = Depends(verify
         raise HTTPException(status_code=400, detail="Du har redan lagt till den här matchen.")
 
     match_id = str(uuid.uuid4())
-    heats = await generate_match_heats(match_data["home_team_id"], match_data["away_team_id"])
+
+    # 👉 SKICKA IN DEFAULT_RULES HÄR
+    heats = await generate_match_heats(
+        match_data["home_team_id"],
+        match_data["away_team_id"],
+        DEFAULT_RULES,
+    )
+
     match_doc = {
         "id": match_id,
         "home_team_id": match_data["home_team_id"],
@@ -867,9 +1166,12 @@ async def create_match(match_data: Dict[str, Any], user_id: str = Depends(verify
         "created_by": user_id,
         "created_at": datetime.utcnow(),
         "official_match_id": match_data.get("official_match_id"),
+        # 👉 SPARA REGLERNA PÅ MATCHEN
+        "meta": {"rules": DEFAULT_RULES},
     }
     await matches_collection.insert_one(match_doc)
     return {"message": "Match skapad med förbestämda heat", "match_id": match_id}
+
 
 
 # @app.get("/api/matches/{match_id}")
@@ -896,6 +1198,7 @@ async def get_match(match_id: str, user_id: str = Depends(verify_jwt_token)):
 
     # säkerhetsbälte: ta bort _id om det ändå skulle slinka med
     match.pop("_id", None)
+    match.setdefault("meta", {}).setdefault("rules", DEFAULT_RULES)
     return match
 
 
@@ -915,7 +1218,7 @@ async def delete_match(match_id: str, user_id: str = Depends(verify_jwt_token)) 
     return {"message": "Match borttagen"}
 
 
-
+# UPDATEAD GÄLLER
 
 @app.put("/api/matches/{match_id}/heat/{heat_number}/riders")
 async def update_heat_riders(
@@ -924,53 +1227,29 @@ async def update_heat_riders(
     rider_assignments: Dict[str, str],
     user_id: str = Depends(verify_jwt_token),
 ) -> Dict[str, Any]:
-    """
-    Update rider assignments for a specific heat within a match.
-
-    The request body should be a mapping of gate numbers ("1"–"4") to
-    rider IDs. Each rider ID must belong to the correct team based on
-    the gate: gates 1 and 3 are home gates, gates 2 and 4 are away gates.
-    To adhere to Elitserien rules, only heats 5–13 can be modified for
-    tactical reserves or rider replacements. Attempts to modify other
-    heats will result in a 400 error.
-
-    Example body:
-    {
-        "1": "rider_id_for_home_gate1",
-        "3": "rider_id_for_home_gate3",
-        "2": "rider_id_for_away_gate2",
-        "4": "rider_id_for_away_gate4"
-    }
-    """
     match = await matches_collection.find_one({"id": match_id})
     if not match:
         raise HTTPException(status_code=404, detail="Match hittades inte")
-    # Locate heat index
-    heat_idx = None
-    for idx, heat in enumerate(match["heats"]):
-        if heat.get("heat_number") == heat_number:
-            heat_idx = idx
+    if match.get("created_by") != user_id:
+        raise HTTPException(status_code=403, detail="Inte behörig")
+
+    # validera enligt reglerna (TR, lås, lag, limits)
+    await validate_heat_rider_change(match, heat_number, rider_assignments)
+
+    # hitta heat
+    heats = match["heats"]
+    for i, h in enumerate(heats):
+        if h.get("heat_number") == heat_number:
+            current_heat = h
             break
-    if heat_idx is None:
+    else:
         raise HTTPException(status_code=404, detail="Heat hittades inte")
-    # Disallow editing outside tactical reserve windows (heats 5–13)
-    if heat_number < 5 or heat_number > 13:
-        raise HTTPException(status_code=400, detail="Endast heat 5–13 kan ändras enligt reglerna")
-    # Update riders for each gate
-    current_heat = match["heats"][heat_idx]
+
+    # skriv byten – färger enligt gate
     for gate, new_rider_id in rider_assignments.items():
-        if gate not in {"1", "2", "3", "4"}:
-            continue
         gate_int = int(gate)
-        # Determine which team the gate belongs to
         expected_team = "home" if gate_int in (1, 3) else "away"
-        # Fetch rider from DB
         rider = await riders_collection.find_one({"id": new_rider_id})
-        if not rider:
-            raise HTTPException(status_code=404, detail=f"Förare {new_rider_id} hittades inte")
-        if rider.get("team_id") != match[f"{expected_team}_team_id"]:
-            raise HTTPException(status_code=400, detail=f"Förare {rider['name']} tillhör inte {expected_team}-laget")
-        # Assign new rider to gate
         colors = get_team_colors(expected_team)
         color_index = 0 if gate_int in (1, 2) else 1
         current_heat["riders"][gate] = {
@@ -979,10 +1258,11 @@ async def update_heat_riders(
             "team": expected_team,
             "helmet_color": colors[color_index],
         }
-    # Persist changes
-    match["heats"][heat_idx] = current_heat
-    await matches_collection.update_one({"id": match_id}, {"$set": {"heats": match["heats"]}})
+
+    heats[i] = current_heat
+    await matches_collection.update_one({"id": match_id}, {"$set": {"heats": heats}})
     return {"message": "Heat-uppställning uppdaterad", "heat": current_heat}
+
 
 
 @app.put("/api/matches/{match_id}/heat/{heat_number}/result")
@@ -1076,7 +1356,501 @@ async def update_heat_result(match_id: str, heat_number: int, result_data: Dict[
         "away_points": away_points,
         "heat_results": updated_results,
     }
+    
+    
+    
+def _team_scores_upto(match: Dict[str, Any], upto_heat: int) -> tuple[int,int]:
+    home = away = 0
+    for h in match["heats"]:
+        hn = h.get("heat_number")
+        if not isinstance(hn, int) or hn >= upto_heat:
+            continue
+        for res in h.get("results", []):
+            pts = int(res.get("points", 0))
+            rid = res.get("rider_id")
+            team = None
+            for e in h.get("riders", {}).values():
+                if e.get("rider_id") == rid:
+                    team = e.get("team")
+                    break
+            if team == "home": home += pts
+            elif team == "away": away += pts
+    return home, away    
+    
+# NYE NDPOITN /VALIDERING FÖR NOMINERINGAR TILL HEAT 14 OCH 15    
+# 3) Validering vid byten (PUT /heat/{n}/riders)
+# 
+# Säkerställ server-side:
+# 
+# Samma lag: gate 1/3 får endast bytas till hemförare, gate 2/4 till bortalag.
+# 
+# Lås reserver: om riders[gate].locked är True → forbid ändring (utom när RR är aktivt och du uttryckligen tillåter).
+# 
+# TR-villkor (heats 5–13, underläge ≥6): max 1 byte per heat.
+async def validate_heat_rider_change(
+    match: Dict[str, Any],
+    heat_number: int,
+    rider_assignments: Dict[str, str],
+) -> None:
+    heats = match["heats"]
+    heat = next((h for h in heats if h.get("heat_number") == heat_number), None)
+    if not heat:
+        raise HTTPException(status_code=404, detail="Heat hittades inte")
 
+    # 1) Gates 1/3 = home, 2/4 = away + rätt lag för vald förare
+    home_team_id = match["home_team_id"]
+    away_team_id = match["away_team_id"]
+    for gate, new_rider_id in rider_assignments.items():
+        gate_int = int(gate)
+        expected_team = "home" if gate_int in (1, 3) else "away"
+        rider = await riders_collection.find_one({"id": new_rider_id})
+        if not rider:
+            raise HTTPException(status_code=404, detail=f"Förare {new_rider_id} hittades inte")
+        if expected_team == "home" and rider.get("team_id") != home_team_id:
+            raise HTTPException(status_code=400, detail=f"Gate {gate}: Endast hemförare får väljas")
+        if expected_team == "away" and rider.get("team_id") != away_team_id:
+            raise HTTPException(status_code=400, detail=f"Gate {gate}: Endast bortalagsförare får väljas")
+
+    # 2) Låsta reserv-heat
+    for gate, entry in heat["riders"].items():
+        if entry.get("locked") and gate in rider_assignments:
+            raise HTTPException(status_code=400, detail=f"Gate {gate}: Reservens schemalagda heat är låst")
+
+    # 3) Taktisk reserv-regler (från match.meta.rules)
+    rules = (match.get("meta") or {}).get("rules") or {}
+    tr = rules.get("tactical", {})
+    t_enabled = tr.get("enabled", True)
+    t_start = tr.get("start_heat", 5)
+    t_end = tr.get("end_heat", 13)
+    t_min_def = tr.get("min_deficit", 6)
+    t_max_per_heat = tr.get("max_per_heat", 1)
+
+    if not (t_enabled and t_start <= heat_number <= t_end):
+        raise HTTPException(status_code=400, detail="Endast heats 5–13 kan ändras enligt TR-regeln")
+
+    # måste ligga under med minst t_min_def före heatet
+    home_score, away_score = _team_scores_upto(match, heat_number)
+    diff = abs(home_score - away_score)
+    losing_team = "home" if home_score < away_score else ("away" if away_score < home_score else None)
+    if losing_team is None or diff < t_min_def:
+        raise HTTPException(status_code=400, detail=f"TR tillåten endast vid underläge ≥ {t_min_def} p")
+
+    # max 1 byte per heat
+    changes = 0
+    for gate, new_rider_id in rider_assignments.items():
+        if new_rider_id != heat["riders"][gate]["rider_id"]:
+            changes += 1
+    if changes > t_max_per_heat:
+        raise HTTPException(status_code=400, detail=f"Max {t_max_per_heat} byte tillåtet per heat enligt TR")
+
+    # 4) Ride-limits (enkelt tak: ordinarie max 6, reserv max 5)
+    rider_heat_counts: Dict[str, int] = {}
+    for h in heats:
+        for e in h.get("riders", {}).values():
+            rid = e.get("rider_id")
+            if rid:
+                rider_heat_counts[rid] = rider_heat_counts.get(rid, 0) + 1
+
+    # simulera byten
+    for gate, new_rider_id in rider_assignments.items():
+        old_rider_id = heat["riders"][gate]["rider_id"]
+        if old_rider_id != new_rider_id:
+            rider_heat_counts[old_rider_id] = max(0, rider_heat_counts.get(old_rider_id, 1) - 1)
+            rider_heat_counts[new_rider_id] = rider_heat_counts.get(new_rider_id, 0) + 1
+
+    for rid, cnt in rider_heat_counts.items():
+        rider = await riders_collection.find_one({"id": rid})
+        if not rider: 
+            continue
+        is_reserve = bool(rider.get("is_reserve", False))
+        max_heats = 5 if is_reserve else 6
+        if cnt > max_heats:
+            nm = rider.get("name", rid)
+            raise HTTPException(status_code=400, detail=f"{nm} överskrider max antal heat ({max_heats})")
+
+
+
+# FUNKTIONER FÖR NOMINATIONS ENDPOINTEN:
+def _sum_scores_by_rider(match: Dict[str, Any]) -> Dict[str, int]:
+    """
+    Summerar poäng (inkl. bonus_points) per rider_id för hela matchen.
+    """
+    scores: Dict[str, int] = {}
+    for h in match.get("heats", []):
+        for res in h.get("results", []):
+            rid = res.get("rider_id")
+            if not rid:
+                continue
+            pts = int(res.get("points", 0)) + int(res.get("bonus_points", 0))
+            scores[rid] = scores.get(rid, 0) + pts
+    return scores
+
+async def _fetch_team_riders_map(team_id: str) -> Dict[str, Dict[str, Any]]:
+    """
+    returnerar { rider_id: rider_doc }
+    """
+    xs = await riders_collection.find({"team_id": team_id}, {"_id": 0}).to_list(length=None)
+    return { str(x["id"]): x for x in xs }
+
+def _ride_limit_for(rider_doc: Dict[str, Any]) -> int:
+    # enkel limit: ordinarie=6, reserv=5
+    return 5 if bool(rider_doc.get("is_reserve", False)) else 6
+
+def _current_heat_counts(match: Dict[str, Any]) -> Dict[str, int]:
+    """
+    Räkna hur många heats varje rider är **uppsatt** i (alla heats).
+    """
+    counts: Dict[str, int] = {}
+    for h in match.get("heats", []):
+        for e in (h.get("riders") or {}).values():
+            rid = e.get("rider_id")
+            if rid:
+                counts[rid] = counts.get(rid, 0) + 1
+    return counts
+
+def _gate_order_for_team_in_heat(heat: Dict[str, Any], team: str) -> list[tuple[str, dict]]:
+    """
+    Returnerar [(gate, entry), ...] för de gates i detta heat som tillhör 'team'
+    i stigande gate-ordning, dvs två stycken.
+    """
+    pairs = []
+    for g in sorted((heat.get("riders") or {}).keys(), key=lambda x: int(x)):
+        entry = heat["riders"][g]
+        if entry.get("team") == team:
+            pairs.append((g, entry))
+    return pairs  # för h14/h15 bör detta vara två st
+
+def _top3_of_team_mains(scores_map: Dict[str,int], riders_map: Dict[str,Dict[str,Any]]) -> list[str]:
+    """
+    Returnerar rider_ids för lagets ordinarie sorterade på poäng (desc).
+    Om 3:e plats är delad, inkluderas alla med score >= score för #3.
+    """
+    mains = [rid for rid,doc in riders_map.items() if not doc.get("is_reserve", False)]
+    ranked = sorted(mains, key=lambda rid: scores_map.get(rid, 0), reverse=True)
+    if len(ranked) <= 3:
+        return ranked
+    # threshold = score för tredjeplatsen
+    third_score = scores_map.get(ranked[2], 0)
+    return [rid for rid in ranked if scores_map.get(rid, 0) >= third_score]
+
+def _assign_nomination_to_gates(heat: Dict[str, Any], team: str, rider_ids: list[str], team_colors: list[str]) -> None:
+    """
+    Skriver in två rider_ids på teamets två gates i heatet, sätter hjälmfärg enligt
+    gate:ens color_choices om de finns, annars standard team-färg (index 0/1).
+    """
+    gates = _gate_order_for_team_in_heat(heat, team)  # [(gate, entry), (gate, entry)]
+    if len(gates) != 2:
+        raise HTTPException(status_code=400, detail=f"Heat {heat.get('heat_number')}: oväntat antal gates för {team}")
+    if len(rider_ids) != 2:
+        raise HTTPException(status_code=400, detail=f"Heat {heat.get('heat_number')}: exakt 2 förare måste nomineras för {team}")
+
+    for i, (gate, entry) in enumerate(gates):
+        rid = rider_ids[i]
+        # välj hjälmfärg: om color_choices finns (från schemat) -> ta i:te färgen modulo 2
+        color = None
+        choices = entry.get("color_choices")
+        if isinstance(choices, list) and choices:
+            color = choices[i % len(choices)]
+        else:
+            # fallback: standard teamfärg (0 för första team-gaten, 1 för andra)
+            color = team_colors[0 if i == 0 else 1]
+
+        heat["riders"][gate] = {
+            "rider_id": rid,
+            "name": None,  # fylls av klienten vid render eller kan hämtas separat; ej nödvändigt här
+            "team": team,
+            "helmet_color": color,
+        }
+            
+# NY ENDPOITN NOMINATIONS FÖR NYA KODEN MED REGLER OCH  SCHEDULA_ELIT FILERNA 
+
+# SUDDAR SÅLÄNGE OCH TESTAR NY KOD UNDER
+# @app.put("/api/matches/{match_id}/nominations")
+# async def update_nominations(
+#     match_id: str,
+#     nominations: Dict[str, Dict[str, list[str]]] = Body(...),
+#     user_id: str = Depends(verify_jwt_token),
+# ) -> Dict[str, Any]:
+#     """
+#     Uppdatera nomineringar för heat 14 och/eller 15, för **båda lag**.
+
+#     Body:
+#     {
+#       "heat14": {"home": [id1,id2], "away": [id3,id4]},
+#       "heat15": {"home": [id5,id6], "away": [id7,id8]}
+#     }
+
+#     Regler:
+#     - Måste göras **efter** att heat 1–13 är completed.
+#     - Heat 14: fritt val bland lagets registrerade förare (hem/ borta).
+#     - Heat 15: 2 av lagets 3 poängbästa **ordinarie** (inkl. bonus). Vid tie på 3:e plats
+#                får alla med score >= tredjeplatsens score anses vara "i topp-3".
+#     - Ride-limits: nomineringen får inte göra att en förare passerar sin gräns
+#                    (ordinarie 6, reserv 5).
+#     - Färger: hämtas från heatets `riders[gate].color_choices` om den finns, annars
+#               lagets standardfärger per gate-ordning.
+#     """
+#     match = await matches_collection.find_one({"id": match_id})
+#     if not match:
+#         raise HTTPException(status_code=404, detail="Match hittades inte")
+#     if match.get("created_by") != user_id:
+#         raise HTTPException(status_code=403, detail="Inte behörig")
+
+#     # Säkerställ att heat 1–13 är klara
+#     completed_1_13 = sum(1 for h in match.get("heats", []) if 1 <= h.get("heat_number", 0) <= 13 and h.get("status") == "completed")
+#     if completed_1_13 < 13:
+#         raise HTTPException(status_code=400, detail="Nominering kan endast göras efter heat 13 är klart")
+
+#     # Hitta heat 14 och 15
+#     heat14 = next((h for h in match["heats"] if h.get("heat_number") == 14), None)
+#     heat15 = next((h for h in match["heats"] if h.get("heat_number") == 15), None)
+#     if not heat14 or not heat15:
+#         raise HTTPException(status_code=400, detail="Match saknar heat 14/15")
+
+#     # Räkna poäng per förare (inkl bonus)
+#     scores_map = _sum_scores_by_rider(match)
+
+#     # Hämta lagens rider-maps
+#     home_id = match["home_team_id"]
+#     away_id = match["away_team_id"]
+#     home_riders_map = await _fetch_team_riders_map(home_id)
+#     away_riders_map = await _fetch_team_riders_map(away_id)
+
+#     # Ride-limits – utgångsläge (innan nomineringen)
+#     base_counts = _current_heat_counts(match)
+
+#     # Hjälp för validering / gräns-koll
+#     def ensure_team_and_exists(rids: list[str], team: str):
+#         riders_map = home_riders_map if team == "home" else away_riders_map
+#         bad = [rid for rid in rids if rid not in riders_map]
+#         if bad:
+#             raise HTTPException(status_code=400, detail=f"{team}: okända förare: {', '.join(bad)}")
+
+#     # ------------- HEAT 15: top-2-av-top-3 per lag -------------
+#     if "heat15" in nominations:
+#         for team in ("home", "away"):
+#             ids = nominations["heat15"].get(team) or []
+#             if len(ids) != 2:
+#                 raise HTTPException(status_code=400, detail=f"heat15/{team}: exakt 2 förare krävs")
+#             ensure_team_and_exists(ids, team)
+
+#             riders_map = home_riders_map if team == "home" else away_riders_map
+#             topset = set(_top3_of_team_mains(scores_map, riders_map))
+#             # Alla nominerade måste tillhöra top-3-mängden (med tie-upplösning)
+#             if not set(ids).issubset(topset):
+#                 raise HTTPException(status_code=400, detail=f"heat15/{team}: nominering måste vara 2 av lagets poängmässigt 3 bästa ordinarie förare")
+
+#     # ------------- HEAT 14: fri nominering per lag -------------
+#     if "heat14" in nominations:
+#         for team in ("home", "away"):
+#             ids = nominations["heat14"].get(team) or []
+#             if len(ids) != 2:
+#                 raise HTTPException(status_code=400, detail=f"heat14/{team}: exakt 2 förare krävs")
+#             ensure_team_and_exists(ids, team)
+
+#     # ------------- Ride-limit-koll (kombinerad effekt av båda heaten) -------------
+#     # Simulera ökningar: varje nominerad förare får +1 heat per heat han/ hon nomineras i.
+#     increments: Dict[str, int] = {}
+#     for hkey in ("heat14", "heat15"):
+#         if hkey not in nominations:
+#             continue
+#         for team in ("home", "away"):
+#             for rid in nominations[hkey].get(team, []):
+#                 increments[rid] = increments.get(rid, 0) + 1
+
+#     # Validera mot limits
+#     for rid, inc in increments.items():
+#         # vilken map?
+#         doc = home_riders_map.get(rid) or away_riders_map.get(rid)
+#         if not doc:
+#             continue
+#         limit = _ride_limit_for(doc)
+#         current = base_counts.get(rid, 0)
+#         if current + inc > limit:
+#             nm = doc.get("name", rid)
+#             raise HTTPException(status_code=400, detail=f"Nominering skulle överskrida heat-tak för {nm} ({current}+{inc} > {limit})")
+
+#     # ------------- Skriv in nomineringarna i heat 14/15 -------------
+#     # Färger: i h14/h15 innehåller rider-entries ofta "color_choices": ["V", "R"] eller liknande planterat av generatorn.
+#     home_colors = get_team_colors("home")
+#     away_colors = get_team_colors("away")
+
+#     if "heat14" in nominations:
+#         # Skriv hem och borta enligt heatets gate->team (bestäms av schemat)
+#         _assign_nomination_to_gates(heat14, "home", nominations["heat14"]["home"], home_colors)
+#         _assign_nomination_to_gates(heat14, "away", nominations["heat14"]["away"], away_colors)
+
+#     if "heat15" in nominations:
+#         _assign_nomination_to_gates(heat15, "home", nominations["heat15"]["home"], home_colors)
+#         _assign_nomination_to_gates(heat15, "away", nominations["heat15"]["away"], away_colors)
+
+#     # Persistera
+#     await matches_collection.update_one(
+#         {"id": match_id},
+#         {"$set": {"heats": match["heats"]}}
+#     )
+
+#     return {"message": "Nomineringar uppdaterade"}
+
+@app.put("/api/matches/{match_id}/nominations")
+async def update_nominations(
+    match_id: str,
+    nominations: Dict[str, Dict[str, list[str]]],  # {heat14:{home:[],away:[]}, heat15:{home:[],away:[]}}
+    user_id: str = Depends(verify_jwt_token),
+) -> Dict[str, Any]:
+    """
+    Body (exempel):
+    {
+      "heat14": { "home": ["h1","h2"], "away": ["a1","a2"] },
+      "heat15": { "home": ["hTop1","hTop2"], "away": ["aTop1","aTop2"] }
+    }
+    """
+    match = await matches_collection.find_one({"id": match_id})
+    if not match:
+        raise HTTPException(status_code=404, detail="Match hittades inte")
+
+    # Endast ägaren får uppdatera
+    if match.get("created_by") != user_id:
+        raise HTTPException(status_code=403, detail="Inte behörig")
+
+    # 1) Kontroll: 1–13 måste vara completed
+    completed = sum(1 for h in match["heats"] if h.get("status") == "completed")
+    if completed < 13:
+        raise HTTPException(status_code=400, detail="Nominering kan endast göras efter heat 13")
+
+    home_id = match["home_team_id"]
+    away_id = match["away_team_id"]
+
+    # 2) Plocka riders per lag
+    home_riders_all = await riders_collection.find({"team_id": home_id}).to_list(length=None)
+    away_riders_all = await riders_collection.find({"team_id": away_id}).to_list(length=None)
+    id_set_home = {r["id"] for r in home_riders_all}
+    id_set_away = {r["id"] for r in away_riders_all}
+
+    # 3) Hämta ordinarie (is_reserve=False) för top-3-beräkningen
+    home_mains = [r for r in home_riders_all if not r.get("is_reserve", False)]
+    away_mains = [r for r in away_riders_all if not r.get("is_reserve", False)]
+    home_main_ids = {r["id"] for r in home_mains}
+    away_main_ids = {r["id"] for r in away_mains}
+
+    # 4) Räkna poäng (inkl bonus) per rider_id
+    rider_scores: Dict[str, int] = {}
+    for h in match["heats"]:
+        for res in h.get("results", []):
+            rid = res.get("rider_id")
+            if not rid:
+                continue
+            pts = int(res.get("points", 0)) + int(res.get("bonus_points", 0))
+            rider_scores[rid] = rider_scores.get(rid, 0) + pts
+
+    def top3_of_team(main_ids: set[str]) -> list[str]:
+        xs = [(rid, rider_scores.get(rid, 0)) for rid in main_ids]
+        xs.sort(key=lambda t: t[1], reverse=True)
+        return [rid for rid, _ in xs[:3]]
+
+    home_top3 = top3_of_team(home_main_ids)
+    away_top3 = top3_of_team(away_main_ids)
+
+    # 5) Validera inkommande struktur
+    for key in ("heat14", "heat15"):
+        if key not in nominations or not isinstance(nominations[key], dict):
+            raise HTTPException(status_code=400, detail=f"Saknar {key} i body")
+        for side in ("home", "away"):
+            if side not in nominations[key] or len(nominations[key][side]) != 2:
+                raise HTTPException(status_code=400, detail=f"{key}: förväntar exakt 2 förare för {side}")
+
+    h14_home = nominations["heat14"]["home"]
+    h14_away = nominations["heat14"]["away"]
+    h15_home = nominations["heat15"]["home"]
+    h15_away = nominations["heat15"]["away"]
+
+    # 6) Lagtillhörighet
+    if not set(h14_home).issubset(id_set_home): raise HTTPException(status_code=400, detail="Heat 14: home innehåller förare som inte tillhör hemmalaget")
+    if not set(h14_away).issubset(id_set_away): raise HTTPException(status_code=400, detail="Heat 14: away innehåller förare som inte tillhör bortalaget")
+    if not set(h15_home).issubset(id_set_home): raise HTTPException(status_code=400, detail="Heat 15: home innehåller förare som inte tillhör hemmalaget")
+    if not set(h15_away).issubset(id_set_away): raise HTTPException(status_code=400, detail="Heat 15: away innehåller förare som inte tillhör bortalaget")
+
+    # 7) Heat 15-regel: 2 av lagets 3 poängbästa ordinarie
+    if not set(h15_home).issubset(set(home_top3)) or not set(h15_away).issubset(set(away_top3)):
+        raise HTTPException(status_code=400, detail="Heat 15 måste vara 2 av lagets 3 poängbästa ordinarie (inkl bonus) för respektive lag")
+
+    # 8) Applicera nomineringar på rätt gate/färg
+    # Mönster enligt tabellen:
+    #  Heat 14: gate1=(away,V), gate2=(home,R), gate3=(away,G), gate4=(home,B)
+    #  Heat 15: gate1=(home,R), gate2=(away,V), gate3=(home,B), gate4=(away,G)
+
+    def assign_nomination(heat_num: int, home_ids: list[str], away_ids: list[str]) -> None:
+        # Hämta heat
+        heat = next((h for h in match["heats"] if h.get("heat_number") == heat_num), None)
+        if not heat:
+            raise HTTPException(status_code=404, detail=f"Heat {heat_num} hittades inte")
+
+        # Hämta fulla rider-objekt i rätt ordning (2 per lag)
+        def get_riders(ids: list[str], pool: list[dict]) -> list[dict]:
+            mp = {r["id"]: r for r in pool}
+            return [mp[i] for i in ids]
+
+        H = get_riders(home_ids, home_riders_all)
+        A = get_riders(away_ids, away_riders_all)
+
+        if heat_num == 14:
+            pattern = {
+                "1": ("away", "V"),
+                "2": ("home", "R"),
+                "3": ("away", "G"),
+                "4": ("home", "B"),
+            }
+        else:  # 15
+            pattern = {
+                "1": ("home", "R"),
+                "2": ("away", "V"),
+                "3": ("home", "B"),
+                "4": ("away", "G"),
+            }
+
+        # Lägg ut enligt pattern – bevara ordningen i listorna
+        # home går på de gates där pattern[x][0] == "home", i given ordning
+        # away likadant
+        home_iter = iter(H)
+        away_iter = iter(A)
+        new_riders = {}
+
+        for gate, (who, color_letter) in pattern.items():
+            if who == "home":
+                r = next(home_iter)
+                new_riders[gate] = {
+                    "rider_id": r["id"],
+                    "name": r["name"],
+                    "team": "home",
+                    "helmet_color": COLOR_TO_HELMET[color_letter],
+                }
+            else:
+                r = next(away_iter)
+                new_riders[gate] = {
+                    "rider_id": r["id"],
+                    "name": r["name"],
+                    "team": "away",
+                    "helmet_color": COLOR_TO_HELMET[color_letter],
+                }
+
+        heat["riders"] = new_riders
+        # Nominering sätter inte heatets status/resultat
+
+    assign_nomination(14, h14_home, h14_away)
+    assign_nomination(15, h15_home, h15_away)
+
+    await matches_collection.update_one({"id": match_id}, {"$set": {"heats": match["heats"]}})
+    return {"message": "Nomineringar uppdaterade"}
+
+
+
+
+
+
+
+
+
+# CONFIRM
 
 @app.put("/api/matches/{match_id}/confirm")
 async def confirm_match(match_id: str, user_id: str = Depends(verify_jwt_token)) -> Dict[str, Any]:
@@ -1278,11 +2052,11 @@ async def import_official_matches() -> Dict[str, Any]:
     fetched.
     """
     try:
-        from scraping.flashscore import fetch_official_speedway_matches  # type: ignore
+        from scraping.flashscore import fetch_official_speedway_matches_async  # type: ignore
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Import error: {e}")
     try:
-        matches = fetch_official_speedway_matches()  # synchronous function returns list
+        matches = await fetch_official_speedway_matches_async()  # synchronous function returns list
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scraper error: {e}")
     added = 0
@@ -1296,6 +2070,52 @@ async def import_official_matches() -> Dict[str, Any]:
             await official_matches_collection.insert_one(match)
             added += 1
     return {"imported_matches": added, "fetched": len(matches)}
+
+
+
+# @app.post("/api/admin/import-official-matches")
+# async def import_official_matches() -> Dict[str, Any]:
+#     """
+#     Hämtar officiella matcher/heat via asynkron Playwright-scrape (svemo.py)
+#     och sparar dem i MongoDB. Upsert på competition_id.
+#     """
+#     try:
+#         # Viktigt: importera din ASYNC-funktion
+#         from scraping.svemo import fetch_all_svemo_heats  # type: ignore
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Import error: {e}")
+
+#     try:
+#         # Viktigt: AWAITA asynkron funktion
+#         matches = await fetch_all_svemo_heats()  # -> List[Dict]
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Scraper error: {e}")
+
+#     if not matches:
+#         return {"imported": 0, "fetched": 0}
+
+#     inserted = 0
+#     upserted = 0
+
+#     for m in matches:
+#         # m innehåller: id, competition_id, source_url, scraped_at, heats
+#         # Vi gör upsert baserat på competition_id
+#         res = await official_matches_collection.update_one(
+#             {"competition_id": m["competition_id"]},
+#             {"$set": m, "$setOnInsert": {"created_at": m.get("scraped_at")}},
+#             upsert=True,
+#         )
+#         if res.upserted_id:
+#             inserted += 1
+#         elif res.modified_count > 0:
+#             upserted += 1
+
+#     return {
+#         "fetched": len(matches),
+#         "inserted_new": inserted,
+#         "updated_existing": upserted,
+#     }
+
 
 
 @app.post("/api/admin/sync-teams-from-official")
@@ -1326,6 +2146,9 @@ async def sync_teams_from_official() -> Dict[str, Any]:
     return {"message": f"{added} lag tillagda i teams"}
 
 
+
+# BE CHATGPT MED RULES OCHJ META SOM I VANLIGA CREATE_MATCH
+
 @app.post("/api/matches/from-official")
 async def create_match_from_official(
     body: CreateFromOfficialIn,
@@ -1344,7 +2167,6 @@ async def create_match_from_official(
         official["date"].replace("Z","+00:00")
     ) if "Z" in official["date"] else datetime.fromisoformat(official["date"])
 
-    # duplicate-guard (samma användare, lag och datum)
     existing = await matches_collection.find_one({
         "created_by": user_id,
         "home_team_id": home["id"],
@@ -1354,21 +2176,18 @@ async def create_match_from_official(
     if existing:
         return {"message": "Match fanns redan", "match_id": existing["id"]}
 
-    # 1) Generera heats (din befintliga funktion)
-    heats: List[Dict[str, Any]] = await generate_match_heats(home["id"], away["id"])
+    # 👉 SKICKA IN DEFAULT_RULES HÄR
+    heats: List[Dict[str, Any]] = await generate_match_heats(
+        home["id"],
+        away["id"],
+        DEFAULT_RULES,
+    )
 
-    # 2) Ladda trupper för respektive lag
-    home_roster = await get_team_roster(home["id"])   # [{id, name}, ...]
-    away_roster = await get_team_roster(away["id"])   # [{id, name}, ...]
+    # (valfritt) säkerhetssanering om du kör den:
+    # home_roster = await get_team_roster(home["id"])
+    # away_roster = await get_team_roster(away["id"])
+    # heats = enforce_unique_riders_in_all_heats(heats, home_roster, away_roster)
 
-    # Om trupp saknas är det bättre att tydligt faila än att skapa korrupt match
-    if not home_roster or not away_roster:
-        raise HTTPException(status_code=400, detail="Saknar komplett lagtrupp för home/away.")
-
-    # 3) Sanera & validera varje heat → ingen förare får förekomma 2 ggr i samma heat
-    heats = enforce_unique_riders_in_all_heats(heats, home_roster, away_roster)
-
-    # 4) Bygg och spara match
     match_id = str(uuid.uuid4())
     match_doc = {
         "id": match_id,
@@ -1380,12 +2199,15 @@ async def create_match_from_official(
         "home_score": 0,
         "away_score": 0,
         "heats": heats,
-        "created_by": user_id,          # <-- samma user_id som verify_jwt_token returnerar
+        "created_by": user_id,
         "created_at": datetime.utcnow(),
         "official_match_id": official["id"],
+        # 👉 SPARA REGLERNA PÅ MATCHEN
+        "meta": {"rules": DEFAULT_RULES},
     }
     await matches_collection.insert_one(match_doc)
     return {"message":"Match skapad från official", "match_id": match_id}
+
 
 
 @app.post("/api/admin/import-official-heats")

@@ -1161,7 +1161,10 @@ export default function HeatDialog({
       const team = next.riders?.[gate]?.team;
       if (!team) return prev; // gate saknas (borde ej ske)
 
-      const roster = ridersByTeam?.[team] || [];
+      // const roster = ridersByTeam?.[team] || [];
+      // TESTAR ANNARS TA TILLBAKA DEN ÖVER
+      const roster = (ridersByTeam && ridersByTeam[team]) || [];
+
       const selected = roster.find((r) => String(r.id) === String(newRiderId));
 
       // Testa guard för hur många byten som tillåts
@@ -1248,7 +1251,6 @@ export default function HeatDialog({
   const handleSave = async () => {
     const h = draftHeat || liveHeat;
 
-    // assignments (rider-byten)
     const assignments = {};
     for (const gate of Object.keys(liveHeat.riders || {})) {
       const beforeId = String(liveHeat.riders[gate]?.rider_id ?? "");
@@ -1256,14 +1258,13 @@ export default function HeatDialog({
       if (beforeId !== afterId) assignments[gate] = afterId;
     }
 
-    // resultat
     const results = Object.keys(heatResults).map((riderId) => ({
       rider_id: riderId,
       position: parseInt(heatResults[riderId].position) || 0,
       status: heatResults[riderId].status,
     }));
 
-    await onSave({ assignments, results });
+    await onSave({ heat_number: liveHeat.heat_number, assignments, results });
     onOpenChange(false);
   };
 
