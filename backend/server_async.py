@@ -933,12 +933,7 @@ async def startup_event() -> None:
     mongo_url = os.getenv("MONGO_URL")  # Example: mongodb+srv://user:pw@cluster.mongodb.net/
 
     # Important parameters added here:
-    client = AsyncIOMotorClient(
-        mongo_url,
-        tls=True,
-        tlsAllowInvalidCertificates=True,
-        retryWrites=False,
-    )
+    client = AsyncIOMotorClient(mongo_url)
 
     db = client["speedway_elitserien"]
 
