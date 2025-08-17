@@ -938,7 +938,6 @@ async def startup_event() -> None:
         tls=True,
         tlsAllowInvalidCertificates=True,
         retryWrites=False,
-        directConnection=True,
     )
 
     db = client["speedway_elitserien"]
