@@ -925,17 +925,24 @@ async def startup_event() -> None:
     always has a full set of teams and riders to work with and avoids
     reliance on placeholder data.
     """
-    # TESTAR INITIERA DB HÄR
     global client, db
     global users_collection, teams_collection, matches_collection
     global riders_collection, user_matches_collection
     global official_matches_collection, official_results_collection, official_heats_collection
 
-    mongo_url = os.getenv("MONGO_URL")
-    client = AsyncIOMotorClient(mongo_url)
+    mongo_url = os.getenv("MONGO_URL")  # Example: mongodb+srv://user:pw@cluster.mongodb.net/
+
+    # Important parameters added here:
+    client = AsyncIOMotorClient(
+        mongo_url,
+        tls=True,
+        tlsAllowInvalidCertificates=True,
+        retryWrites=False,
+        directConnection=True,
+    )
+
     db = client["speedway_elitserien"]
 
-    # initialise collections
     users_collection = db["users"]
     teams_collection = db["teams"]
     matches_collection = db["matches"]
