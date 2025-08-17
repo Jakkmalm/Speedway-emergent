@@ -39,8 +39,8 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "speedway-secret-key-2025")
 JWT_ALGORITHM = "HS256"
 
 # Initialize asynchronous MongoDB client and collections
-client = AsyncIOMotorClient(MONGO_URL)
-db = client["speedway_elitserien"]
+# client = AsyncIOMotorClient(MONGO_URL)   TESTAR INITIERA INUTI STARTUP
+# db = client["speedway_elitserien"]
 users_collection = db["users"]
 teams_collection = db["teams"]
 matches_collection = db["matches"]
@@ -911,6 +911,12 @@ async def startup_event() -> None:
     always has a full set of teams and riders to work with and avoids
     reliance on placeholder data.
     """
+    # TESTAR INITIERA DB HÄR
+    global client, db
+    mongo_url = os.getenv("MONGO_URL", "mongodb://localhost:27017")
+    client = AsyncIOMotorClient(mongo_url)
+    db = client["speedway-database"]
+    
     await seed_teams_and_riders()
     
     
