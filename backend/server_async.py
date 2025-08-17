@@ -981,7 +981,8 @@ async def register(user_data: UserRegister) -> Dict[str, Any]:
     # Ensure DB and collections are initialised
     if users_collection is None:
         raise HTTPException(status_code=503, detail="Database not initialised yet")
-    existing = await users_collection.find_one({"$or": [{"username": user_data.username}, {"email": user_data.email}]})
+    existing = await users_collection.find_one({"$or": [{"username": user_data.username}, {"email": user_data.email}]}, 
+                                               session=None)
     if existing:
         raise HTTPException(status_code=400, detail="Användare finns redan")
     user_id = str(uuid.uuid4())
@@ -993,7 +994,7 @@ async def register(user_data: UserRegister) -> Dict[str, Any]:
         "password": hashed_password,
         "created_at": datetime.utcnow(),
     }
-    await users_collection.insert_one(user_doc)
+    await users_collection.insert_one(user_doc, session=None)
     token = create_jwt_token(user_id)
     return {"token": token, "user": {"id": user_id, "username": user_data.username, "email": user_data.email}}
 
