@@ -41,14 +41,25 @@ JWT_ALGORITHM = "HS256"
 # Initialize asynchronous MongoDB client and collections
 # client = AsyncIOMotorClient(MONGO_URL)   TESTAR INITIERA INUTI STARTUP
 # db = client["speedway_elitserien"]
-users_collection = db["users"]
-teams_collection = db["teams"]
-matches_collection = db["matches"]
-riders_collection = db["riders"]
-user_matches_collection = db["user_matches"]
-official_matches_collection = db["official_matches"]
-official_results_collection = db["official_results"]
-official_heats_collection = db["official_heats"]
+# users_collection = db["users"]
+# teams_collection = db["teams"]
+# matches_collection = db["matches"]
+# riders_collection = db["riders"]
+# user_matches_collection = db["user_matches"]
+# official_matches_collection = db["official_matches"]
+# official_results_collection = db["official_results"]
+# official_heats_collection = db["official_heats"]
+
+client = None
+db = None
+users_collection = None
+teams_collection = None
+matches_collection = None
+riders_collection = None
+user_matches_collection = None
+official_matches_collection = None
+official_results_collection = None
+official_heats_collection = None
 
 # FastAPI app setup
 app = FastAPI(title="Speedway Elitserien API (Async)")
@@ -916,9 +927,23 @@ async def startup_event() -> None:
     """
     # TESTAR INITIERA DB HÄR
     global client, db
-    MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
-    client = AsyncIOMotorClient(MONGO_URL)
-    db = client["speedway-database"]
+    global users_collection, teams_collection, matches_collection
+    global riders_collection, user_matches_collection
+    global official_matches_collection, official_results_collection, official_heats_collection
+
+    mongo_url = os.getenv("MONGO_URL")
+    client = AsyncIOMotorClient(mongo_url)
+    db = client["speedway_elitserien"]
+
+    # initialise collections
+    users_collection = db["users"]
+    teams_collection = db["teams"]
+    matches_collection = db["matches"]
+    riders_collection = db["riders"]
+    user_matches_collection = db["user_matches"]
+    official_matches_collection = db["official_matches"]
+    official_results_collection = db["official_results"]
+    official_heats_collection = db["official_heats"]
     
     await seed_teams_and_riders()
     
