@@ -978,6 +978,9 @@ async def register(user_data: UserRegister) -> Dict[str, Any]:
     Register a new user. Returns a JWT and user data on success.
     Raises HTTP 400 if the username or email already exists.
     """
+    # Ensure DB and collections are initialised
+    if users_collection is None:
+        raise HTTPException(status_code=503, detail="Database not initialised yet")
     existing = await users_collection.find_one({"$or": [{"username": user_data.username}, {"email": user_data.email}]})
     if existing:
         raise HTTPException(status_code=400, detail="Användare finns redan")
