@@ -945,8 +945,13 @@ async def startup_event() -> None:
     official_results_collection = db["official_results"]
     official_heats_collection = db["official_heats"]
     
-    await seed_teams_and_riders()
+    # await seed_teams_and_riders()  KÖRA I EGEN ENDPOINT /API/SEED?
     
+    
+@app.post("/api/seed")
+async def run_seed():
+    await seed_teams_and_riders()
+    return {"status": "ok"}
     
     
 @app.post("/api/teams/resolve")
