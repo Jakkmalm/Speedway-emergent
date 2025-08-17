@@ -34,7 +34,7 @@ from services.meta_rules import DEFAULT_RULES
 
 
 # Environment variables and constants
-MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+# MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")  TESTAR INITIERA INUTI STARTUP
 JWT_SECRET = os.environ.get("JWT_SECRET", "speedway-secret-key-2025")
 JWT_ALGORITHM = "HS256"
 
@@ -913,8 +913,8 @@ async def startup_event() -> None:
     """
     # TESTAR INITIERA DB HÄR
     global client, db
-    mongo_url = os.getenv("MONGO_URL", "mongodb://localhost:27017")
-    client = AsyncIOMotorClient(mongo_url)
+    MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
+    client = AsyncIOMotorClient(MONGO_URL)
     db = client["speedway-database"]
     
     await seed_teams_and_riders()
