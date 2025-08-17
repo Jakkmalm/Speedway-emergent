@@ -53,6 +53,9 @@ official_heats_collection = db["official_heats"]
 # FastAPI app setup
 app = FastAPI(title="Speedway Elitserien API (Async)")
 
+client = None
+db = None
+
 FRONTEND_ORIGINS = [
     "http://localhost:3000",   # Vite/CRA dev
     # lägg till fler origins här vid behov
