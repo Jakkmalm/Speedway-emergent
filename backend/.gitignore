@@ -1,1 +1,7 @@
+# Python venv
+venv311/
+venv/
+.venv/
+ENV/
+env/
 .env
