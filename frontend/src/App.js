@@ -18,7 +18,6 @@ export default function App() {
   return (
     <AuthProvider>
       <Suspense fallback={<div className="p-6">Laddar…</div>}>
-      <Toaster /> 
         <Router>
           <Routes>
             {/* Öppen route för inlogg/registrering */}
@@ -39,6 +38,8 @@ export default function App() {
               <Route path="*" element={<NotFoundPage />} />
             </Route>
           </Routes>
+          {/* 2. Lägg till Toaster-komponenten här */}
+          <Toaster richColors position="top-right" />
         </Router>
       </Suspense>
     </AuthProvider>

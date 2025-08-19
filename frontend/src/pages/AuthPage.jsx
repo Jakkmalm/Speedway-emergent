@@ -14,6 +14,8 @@ import {
   TabsContent,
 } from "../components/ui/tabs";
 
+import { toast } from "sonner";
+
 export default function AuthPage() {
   const { user, login, register } = useAuth();
   const navigate = useNavigate();
@@ -44,14 +46,11 @@ export default function AuthPage() {
       await login(loginForm.username, loginForm.password);
       navigate(redirectTo, { replace: true });
       // Om du vill – visa en positiv toast:
-      toast({
-        title: "Välkommen tillbaka!",
-      });
+      toast.success("Välkommen tillbaka!");
     } catch (err) {
       // Visa *användarvänligt* fel
-      toast({
-        title: "Inloggning misslyckades",
-        description: err?.message || "Något gick fel. Försök igen."
+      toast.error("Inloggning misslyckades", {
+        description: err?.message || "Något gick fel. Försök igen.",
       });
       // Extra: logga detaljerat fel till konsolen
       console.error(err);
