@@ -14,8 +14,6 @@ import {
   TabsContent,
 } from "../components/ui/tabs";
 
-import { toast } from "sonner";
-
 export default function AuthPage() {
   const { user, login, register } = useAuth();
   const navigate = useNavigate();
