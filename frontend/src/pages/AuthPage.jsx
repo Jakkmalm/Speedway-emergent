@@ -67,8 +67,11 @@ export default function AuthPage() {
         registerForm.password
       );
       navigate(redirectTo, { replace: true });
+      toast.success("Konto skapat!");
     } catch (err) {
-      alert("Registrering misslyckades: " + err.message);
+      toast.error("Registrering misslyckades", {
+        description: err?.message || "Något gick fel. Försök igen.",
+      });
     } finally {
       setLoading(false);
     }

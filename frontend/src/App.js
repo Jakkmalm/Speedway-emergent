@@ -39,7 +39,21 @@ export default function App() {
             </Route>
           </Routes>
           {/* 2. Lägg till Toaster-komponenten här */}
-          <Toaster richColors position="top-right" />
+          <Toaster  position="top-center"
+          richColors
+          toastOptions={{
+            // Här lägger vi till anpassad styling
+            classNames: {
+              toast: 'bg-zinc-900 border-zinc-700 shadow-lg', // Generell stil för alla toasts
+              title: 'text-white text-base',                  // Stil för titeln
+              description: 'text-zinc-400',                   // Stil för beskrivningen
+              actionButton: 'bg-indigo-600 text-white',       // Stil för en action-knapp
+              
+              // Du kan även styla specifika typer
+              success: 'border-green-500 text-white',
+              error: 'bg-red-950 border-red-700 text-red-100',
+            },
+          }}/>
         </Router>
       </Suspense>
     </AuthProvider>
