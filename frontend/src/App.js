@@ -12,10 +12,13 @@ import AuthPage from "./pages/AuthPage";
 import RequireAuth from "./components/RequireAuth";
 import { AuthProvider } from "./contexts/AuthContext";
 
+import { Toaster } from "@/components/ui/sonner";
+
 export default function App() {
   return (
     <AuthProvider>
       <Suspense fallback={<div className="p-6">Laddar…</div>}>
+      <Toaster /> 
         <Router>
           <Routes>
             {/* Öppen route för inlogg/registrering */}
