@@ -1,5 +1,6 @@
 // src/pages/AuthPage.jsx
 import React, { useState, useEffect } from "react";
+import { useToast } from "@/hooks/use-toast"   // eller "@/components/ui/use-toast"
 import { useAuth } from "../contexts/AuthContext";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "../components/ui/button";
@@ -27,6 +28,8 @@ export default function AuthPage() {
     password: "",
   });
 
+  const { toast } = useToast();
+
   // Om man redan är inloggad och går till /auth → hoppa vidare direkt
   useEffect(() => {
     if (user) navigate(redirectTo, { replace: true });
@@ -35,11 +38,22 @@ export default function AuthPage() {
   const doLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
+
     try {
       await login(loginForm.username, loginForm.password);
       navigate(redirectTo, { replace: true });
+      // Om du vill – visa en positiv toast:
+      toast({
+        title: "Välkommen tillbaka!",
+      });
     } catch (err) {
-      alert("Inloggning misslyckades: " + err.message);
+      // Visa *användarvänligt* fel
+      toast({
+        title: "Inloggning misslyckades",
+        description: err?.message || "Något gick fel. Försök igen."
+      });
+      // Extra: logga detaljerat fel till konsolen
+      console.error(err);
     } finally {
       setLoading(false);
     }
