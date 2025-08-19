@@ -1,6 +1,7 @@
 // src/pages/AuthPage.jsx
 import React, { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast"   // eller "@/components/ui/use-toast"
+import { toast } from "@/components/ui/sonner"; // Använd sonner för toast
 import { useAuth } from "../contexts/AuthContext";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "../components/ui/button";
@@ -28,7 +29,7 @@ export default function AuthPage() {
     password: "",
   });
 
-  const { toast } = useToast();
+  // const { toast } = useToast();
 
   // Om man redan är inloggad och går till /auth → hoppa vidare direkt
   useEffect(() => {
