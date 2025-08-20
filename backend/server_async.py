@@ -69,7 +69,7 @@ db = None
 
 FRONTEND_ORIGINS = [
     "http://localhost:3000",  # För lokal utveckling
-    "https://speedway-frontend-production.up.railway.app", # Produktion
+    # "https://speedway-frontend-production.up.railway.app", # Produktion
 ]
 
 # Allow CORS from all origins (adjust in production)
@@ -933,7 +933,9 @@ async def startup_event() -> None:
     mongo_url = os.getenv("MONGO_URL")  # Example: mongodb+srv://user:pw@cluster.mongodb.net/
 
     # Important parameters added here:
-    client = AsyncIOMotorClient(mongo_url, tls=True)
+    # client = AsyncIOMotorClient(mongo_url, tls=True)
+    # NÄR JAG KÖR LOKALT:
+    client = AsyncIOMotorClient(mongo_url)
 
     db = client["speedway_elitserien"]
 

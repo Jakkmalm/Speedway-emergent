@@ -30,6 +30,9 @@
 export const API_BASE_URL =
   process.env.REACT_APP_BACKEND_URL || "http://localhost:8002";
 
+// export const API_BASE_URL =
+//   "http://localhost:8002";
+
 export function getToken() {
   return localStorage.getItem("speedway_token");
 }

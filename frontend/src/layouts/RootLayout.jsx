@@ -14,7 +14,7 @@ export default function RootLayout() {
     `${navLink} ${isActive ? "bg-gray-200" : ""}`;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-zinc-900 dark:to-black">
       {/* Header / meny */}
       <Header />
 

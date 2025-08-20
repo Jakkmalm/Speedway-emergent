@@ -106,15 +106,15 @@ export default function MatchesPage() {
     }
   };
 
-  const handleDelete = async (id) => {
-    if (!window.confirm("Ta bort matchen?")) return;
-    try {
-      await deleteMatch(id);
-      setMatches((prev) => prev.filter((m) => m.id !== id));
-    } catch (e) {
-      alert("Kunde inte ta bort match: " + e.message);
-    }
-  };
+  // const handleDelete = async (id) => {
+  //   if (!window.confirm("Ta bort matchen?")) return;
+  //   try {
+  //     await deleteMatch(id);
+  //     setMatches((prev) => prev.filter((m) => m.id !== id));
+  //   } catch (e) {
+  //     alert("Kunde inte ta bort match: " + e.message);
+  //   }
+  // };
 
   return (
     <div className="grid gap-6">
@@ -126,14 +126,14 @@ export default function MatchesPage() {
               Välj från listan för att skapa din match
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent >
             <div className="mb-4">
               <Label>Officiella matcher</Label>
               <Select
                 value={selectedOfficialId ?? undefined}
                 onValueChange={onSelectOfficial}
               >
-                <SelectTrigger>
+                <SelectTrigger className="">
                   <SelectValue
                     placeholder={
                       official.length
@@ -142,9 +142,10 @@ export default function MatchesPage() {
                     }
                   />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="">
                   {official.map((m) => (
-                    <SelectItem key={m.id} value={m.id}>
+                    <SelectItem
+                      key={m.id} value={m.id}>
                       {m.home_team} vs {m.away_team} •{" "}
                       {new Date(m.date).toLocaleTimeString([], {
                         hour: "2-digit",
@@ -155,7 +156,7 @@ export default function MatchesPage() {
                 </SelectContent>
               </Select>
               {selectedOfficial && (
-                <div className="mt-2 text-sm text-gray-600">
+                <div className="mt-2 text-sm text-muted-foreground">
                   Vald: <strong>{selectedOfficial.home_team}</strong> vs{" "}
                   <strong>{selectedOfficial.away_team}</strong> •{" "}
                   {new Date(selectedOfficial.date).toLocaleString()}
@@ -165,22 +166,6 @@ export default function MatchesPage() {
           </CardContent>
         </Card>
       )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center">
-            <Calendar className="w-5 h-5 mr-2" />
-            Skapade matcher
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <MatchList
-            matches={matches}
-            userId={user?.id}
-            onDelete={handleDelete}
-          />
-        </CardContent>
-      </Card>
     </div>
   );
 }

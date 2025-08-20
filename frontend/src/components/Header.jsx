@@ -208,10 +208,11 @@ export default function Header() {
 
   const nav = [
     { to: "/", label: "Tabell", show: true },
-    { to: "/matches", label: "Matcher", show: true },
+    // { to: "/matches", label: "Matcher", show: true },
+    { to: "/dashboard", label: "Dashboard", show: true },
     // Visa Protokoll endast när vi faktiskt är på en match-route
     { to: activeMatchId ? `/match/${activeMatchId}` : "/matches", label: "Protokoll", show: !!activeMatchId },
-    { to: "/my-matches", label: "Mina matcher", show: !!user },
+    // { to: "/my-matches", label: "Mina matcher", show: !!user },
   ];
 
   const handleLogout = () => {
@@ -220,17 +221,17 @@ export default function Header() {
   };
 
   return (
-    <header className="bg-white shadow-lg border-b-4 border-red-600 sticky top-0 z-40">
+    <header className="bg-background shadow-lg border-b-2 border-red-600 sticky top-0 z-40">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="h-16 flex items-center justify-between">
           {/* Brand */}
           <NavLink to="/" className="flex items-center space-x-3">
-            <div className="w-10 h-10 bg-red-600 rounded-xl flex items-center justify-center">
+            <div className="w-10 h-10 bg-destructive rounded-xl flex items-center justify-center">
               <Trophy className="h-6 w-6 text-white" />
             </div>
             <div className="hidden sm:block">
-              <div className="text-lg font-bold text-gray-900">Speedway Elitserien</div>
-              <div className="text-xs text-gray-500 -mt-0.5">Professionellt Matchprotokoll</div>
+              <div className="text-lg font-bold text-primary">Speedway Elitserien</div>
+              <div className="text-xs text-muted-foreground -mt-0.5">Professionellt Matchprotokoll</div>
             </div>
           </NavLink>
 
@@ -243,7 +244,7 @@ export default function Header() {
                 className={({ isActive }) =>
                   cx(
                     "px-3 py-2 rounded-md text-sm font-medium transition",
-                    isActive ? "bg-red-600 text-white" : "text-gray-700 hover:text-gray-900 hover:bg-gray-100"
+                    isActive ? "text-primary" : "text-muted-foreground hover:text-primary"
                   )
                 }
               >
@@ -256,9 +257,17 @@ export default function Header() {
           <div className="hidden md:flex items-center gap-3">
             {user ? (
               <>
-                <span className="text-sm text-gray-700">
+                <NavLink to="/account"
+                  className={({ isActive }) =>
+                    cx(
+                      "text-sm text-muted-foreground",
+                      isActive ? "text-primary" : "text-muted-foreground hover:text-primary"
+                    )
+                  }
+                  onClick={() => setOpen(false)}
+                >
                   Hej, <b>{user.username}</b>
-                </span>
+                </NavLink>
                 <Button variant="outline" onClick={handleLogout}>
                   Logga ut
                 </Button>
@@ -272,11 +281,11 @@ export default function Header() {
 
           {/* Mobile menu button */}
           <button
-            className="md:hidden inline-flex items-center justify-center p-2 rounded-md hover:bg-gray-100"
+            className="md:hidden inline-flex items-center justify-center p-2 rounded-md"
             onClick={() => setOpen(o => !o)}
             aria-label="Open menu"
           >
-            <svg className="h-6 w-6 text-gray-800" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <svg className="h-6 w-6 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor">
               {open ? (
                 <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
               ) : (
@@ -289,7 +298,7 @@ export default function Header() {
 
       {/* Mobile nav */}
       {open && (
-        <div className="md:hidden border-t bg-white">
+        <div className="md:hidden border-t bg-card">
           <div className="px-4 py-3 space-y-2">
             {nav.filter(n => n.show).map(n => (
               <NavLink
@@ -299,7 +308,7 @@ export default function Header() {
                 className={({ isActive }) =>
                   cx(
                     "block px-3 py-2 rounded-md text-sm font-medium transition",
-                    isActive ? "bg-red-600 text-white" : "text-gray-700 hover:text-gray-900 hover:bg-gray-100"
+                    isActive ? "text-primary" : "text-muted-foreground"
                   )
                 }
               >
@@ -310,9 +319,20 @@ export default function Header() {
             <div className="pt-2 border-t">
               {user ? (
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-700">
+                  {/* <span className="text-sm text-gray-700">
                     Inloggad som <b>{user.username}</b>
-                  </span>
+                  </span> */}
+                  <NavLink to="/account"
+                    className={({ isActive }) =>
+                      cx(
+                        "text-sm text-muted-foreground",
+                        isActive ? "text-primary" : "text-muted-foreground hover:text-primary"
+                      )
+                    }
+                    onClick={() => setOpen(false)}>
+                    Inloggad som <b>{user.username}</b>
+                  </NavLink>
+
                   <Button variant="outline" size="sm" onClick={handleLogout}>
                     Logga ut
                   </Button>

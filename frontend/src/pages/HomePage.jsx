@@ -4,6 +4,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "../co
 import TeamTable from "../components/TeamTable";
 import { getTeams } from "../api/teams";
 import { Trophy } from "lucide-react";
+import { Skeleton } from "../components/ui/skeleton";
 
 export default function HomePage() {
   const [teams, setTeams] = useState([]);
@@ -13,7 +14,7 @@ export default function HomePage() {
   }, []);
 
   return (
-    <Card>
+    <Card className="">
       <CardHeader>
         <CardTitle className="flex items-center">
           <Trophy className="w-5 h-5 mr-2 text-yellow-600" />
@@ -22,7 +23,17 @@ export default function HomePage() {
         <CardDescription>Aktuell ställning i Speedway Elitserien</CardDescription>
       </CardHeader>
       <CardContent>
-        <TeamTable teams={teams} />
+        {teams ? (
+          <TeamTable teams={teams} />
+        ) : (
+          // Skeleton placeholder (4 rader)
+          <div className="space-y-2">
+            <Skeleton className="h-[40px] w-full rounded-md" />
+            <Skeleton className="h-[40px] w-full rounded-md" />
+            <Skeleton className="h-[40px] w-full rounded-md" />
+            <Skeleton className="h-[40px] w-full rounded-md" />
+          </div>
+        )}
       </CardContent>
     </Card>
   );

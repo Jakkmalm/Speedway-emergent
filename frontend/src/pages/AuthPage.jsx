@@ -29,7 +29,6 @@ export default function AuthPage() {
     password: "",
   });
 
-  // const { toast } = useToast();
 
   // Om man redan är inloggad och går till /auth → hoppa vidare direkt
   useEffect(() => {
@@ -79,7 +78,7 @@ export default function AuthPage() {
 
   return (
     <div className="min-h-screen grid place-items-center p-6">
-      <div className="w-full max-w-sm bg-white shadow rounded-xl p-6">
+      <div className="w-full max-w-sm bg-background shadow rounded-xl p-6">
         <h1 className="text-xl font-semibold mb-2 text-center">Välkommen</h1>
         <p className="text-sm text-gray-600 text-center mb-4">
           Logga in eller skapa konto

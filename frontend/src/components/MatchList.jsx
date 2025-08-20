@@ -26,38 +26,67 @@ export default function MatchList({ matches, userId, onDelete }) {
       {myMatches.map((match) => (
         <div
           key={match.id}
-          className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50"
+          className="flex items-center justify-between p-4 border rounded-lg hover:bg-muted"
         >
           <div className="flex-1">
+            <Badge
+              variant={
+                match.status === "confirmed"
+                  ? "default"
+                  : match.status === "completed"
+                    ? "secondary"
+                    : match.status === "live"
+                      ? "destructive"
+                      : "secondary"
+              }
+            >
+              {match.status === "confirmed"
+                ? "Bekräftad"
+                : match.status === "completed"
+                  ? "Avslutad"
+                  : match.status === "live"
+                    ? "Live"
+                    : "Kommande"}
+            </Badge>
             <div className="flex items-center space-x-4">
               <div className="text-lg font-semibold">
                 {match.home_team} vs {match.away_team}
               </div>
-              <Badge
-                variant={
-                  match.status === "confirmed"
-                    ? "default"
-                    : match.status === "completed"
-                    ? "secondary"
-                    : match.status === "live"
-                    ? "destructive"
-                    : "secondary"
-                }
-              >
-                {match.status === "confirmed"
-                  ? "Bekräftad"
-                  : match.status === "completed"
-                  ? "Avslutad"
-                  : match.status === "live"
-                  ? "Live"
-                  : "Kommande"}
-              </Badge>
+
             </div>
             <div className="text-sm text-gray-600 mt-1">
               {formatDate(match.date)} {match.venue ? `• ${match.venue}` : ""}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-row items-center gap-2 w-auto">
+            {/* Play/Resume button */}
+            <Button
+              onClick={() => navigate(`/match/${match.id}`)}
+              size="sm"
+              className="sm:flex-none"
+            >
+              <Play className="w-4 h-4 mr-0 sm:mr-2" />
+              {/* Text göms på små skärmar, visas på sm+ */}
+              <span className="hidden sm:inline">
+                {match.heats.some((h) => h.results?.length > 0)
+                  ? "Återuppta protokoll"
+                  : "Starta protokoll"}
+              </span>
+            </Button>
+
+            {/* Delete button */}
+            <Button
+              onClick={() => onDelete(match.id)}
+              size="sm"
+              variant="destructive"
+              className="sm:flex-none"
+            >
+              <span className="hidden sm:inline">Ta bort</span>
+              <span className="sm:hidden">✕</span>
+            </Button>
+          </div>
+
+          {/* <div className="flex items-center gap-2">
             <Button onClick={() => navigate(`/match/${match.id}`)} size="sm">
 
               <Play className="w-4 h-4 mr-2" />
@@ -73,7 +102,7 @@ export default function MatchList({ matches, userId, onDelete }) {
             >
               Ta bort
             </Button>
-          </div>
+          </div> */}
         </div>
       ))}
       {myMatches.length === 0 && (
