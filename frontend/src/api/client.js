@@ -30,6 +30,8 @@
 export const API_BASE_URL =
   process.env.REACT_APP_BACKEND_URL || "http://localhost:8002";
 
+
+// LOKAL UTVECKLING:
 // export const API_BASE_URL =
 //   "http://localhost:8002";
 
