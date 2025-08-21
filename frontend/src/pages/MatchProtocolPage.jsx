@@ -6,6 +6,7 @@ import {
   clearHeatResults,
   putHeatResults,
   updateHeatRiders,
+  confirmMatch
 } from "../api/matches";
 import { useParams, useNavigate } from "react-router-dom";
 import {
@@ -14,16 +15,24 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  CardFooter,
 } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { Trophy, Target, AlertTriangle } from "lucide-react";
+import { Trophy, Target, AlertTriangle, Play, Save } from "lucide-react";
 import HeatDialog from "@/components/HeatDialog";
 import NominationDialog from "@/components/NominationDialog";
 import { useAuth } from "../contexts/AuthContext";
+import { Separator } from "@/components/ui/separator";
+import { Tooltip, TooltipProvider, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils"; // justera sökväg om nötig
 
-const API_BASE_URL =
-  process.env.REACT_APP_BACKEND_URL || "http://localhost:8002";
+import { toast } from "sonner";
+import { ConfirmButton } from "@/components/ConfirmButton";
+
+
+// const API_BASE_URL =
+//   process.env.REACT_APP_BACKEND_URL || "http://localhost:8002";
 
 // Summerar totaler från sparade heat i matchen
 // const computeTotalsFromHeats = (match) => {
@@ -45,6 +54,15 @@ const API_BASE_URL =
 //   return { home, away };
 // };
 
+
+
+function isMatchComplete(match) {
+  if (!match?.heats || match.heats.length < 15) return false;
+  return match.heats.every(
+    (h) => h?.status === "completed" && (h?.results?.length ?? 0) >= 4
+  );
+}
+
 export default function MatchProtocolPage() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -54,9 +72,13 @@ export default function MatchProtocolPage() {
   // const [ridersByTeam, setRidersByTeam] = useState({});
   const [ridersByTeam, setRidersByTeam] = useState({ home: [], away: [] });
 
+  const matchId = useParams();
+  const [saving, setSaving] = useState(false);
+  const complete = useMemo(() => isMatchComplete(match), [match]);
+
   // --- 8-poängsregel: state + helpers ---
-  const [laneChoiceByHeat, setLaneChoiceByHeat] = useState({}); // "matchId#heat" -> { team:'home'|'away', pair:'13'|'24' }
-  const [originalRidersByHeat, setOriginalRidersByHeat] = useState({}); // "matchId#heat" -> snapshot av ursprungliga riders
+  // const [laneChoiceByHeat, setLaneChoiceByHeat] = useState({}); // "matchId#heat" -> { team:'home'|'away', pair:'13'|'24' }
+  // const [originalRidersByHeat, setOriginalRidersByHeat] = useState({}); // "matchId#heat" -> snapshot av ursprungliga riders
 
   const heatKeyOf = (matchId, heatNumber) => `${matchId}#${heatNumber}`;
 
@@ -358,6 +380,34 @@ export default function MatchProtocolPage() {
     [match?.id] // <-- selectedHeat tas bort ur dependencies
   );
 
+  // === NYTT: spara matchen
+  // Spara/confirm – använder id från useParams
+  const doSave = useCallback(async () => {
+    setSaving(true);
+    try {
+      const res = await toast.promise(confirmMatch(id), {
+        loading: "Sparar…",
+        success: "Protokoll sparat",
+        error: (e) => e?.detail || "Kunde inte spara protokollet",
+      });
+
+      if (res?.discrepancies?.length) {
+        const text = res.discrepancies
+          .map((d) => `${d.type}: ${d.user_value} → ${d.official_value}`)
+          .join(" • ");
+        toast("Skillnader mot officiella resultat", {
+          description: text,
+          closeButton: true,
+          duration: 12000,
+        });
+      }
+
+      navigate("/my-matches", { replace: true, state: { justSaved: true } });
+    } finally {
+      setSaving(false);
+    }
+  }, [id, navigate]);
+
   // const handleSave = useCallback(
   //   async ({ assignments, results }) => {
   //     if (!match || !selectedHeat) return;
@@ -518,7 +568,7 @@ export default function MatchProtocolPage() {
             </div>
             <div>
               <div className="text-lg text-gray-400">-</div>
-              {getStatusBadge(match.status)}
+              {/* {getStatusBadge(match.status)} */}
             </div>
             <div>
               <div className="text-4xl font-bold text-yellow-600">
@@ -557,108 +607,134 @@ export default function MatchProtocolPage() {
               const bonuses = computeHeatBonuses(heat);
 
               return (
-                <div
+                <Card
                   key={heat.heat_number}
-                  className="border rounded-lg p-4 hover:bg-gray-50"
+                  className="rounded-2xl border bg-card transition hover:bg-accent/40"
                 >
-                  <div className="flex items-center justify-between mb-3">
-                    <h4 className="font-semibold">Heat {heat.heat_number}</h4>
-                    <div className="flex items-center space-x-2">
-                      {getStatusBadge(heat.status)}
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-base">Heat {heat.heat_number}</CardTitle>
+                      <div className="flex items-center gap-2">
+                        {getStatusBadge(heat.status)}
+                      </div>
                     </div>
-                  </div>
+                  </CardHeader>
 
-                  <div className="grid grid-cols-2 gap-2 text-sm mb-3">
-                    {Object.keys(heat.riders)
-                      .sort()
-                      .map((gate) => {
-                        const rider = heat.riders[gate];
-                        const result = heat.results?.find(
-                          (r) => r.rider_id === rider.rider_id
-                        );
-                        const bonus = bonuses[rider.rider_id] || 0;
+                  <CardContent className="space-y-3">
+                    <Separator />
 
-                        const gateStyle =
-                          rider.team === "home"
-                            ? gate === "1" || gate === "3"
-                              ? "border-l-4 border-red-600 bg-red-50"
-                              : "border-l-4 border-blue-600 bg-blue-50"
-                            : gate === "2" || gate === "4"
-                            ? "border-l-4 border-yellow-500 bg-yellow-50"
-                            : "border-l-4 border-gray-300 bg-gray-50";
+                    <div className="grid grid-cols-2 gap-2 text-sm">
+                      {Object.keys(heat.riders)
+                        .sort()
+                        .map((gate) => {
+                          const rider = heat.riders[gate];
+                          const result = heat.results?.find((r) => r.rider_id === rider.rider_id);
+                          const bonus = bonuses[rider.rider_id] || 0;
 
-                        return (
-                          <div
-                            key={gate}
-                            className={`text-center p-2 rounded ${gateStyle}`}
-                          >
-                            <div className="flex items-center justify-center space-x-1">
-                              <span className="w-5 h-5 bg-gray-200 rounded-full text-xs flex items-center justify-center">
-                                {gate}
-                              </span>
-                              <div
-                                className="w-3 h-3 rounded-full border"
-                                style={{
-                                  backgroundColor: rider.helmet_color,
-                                  borderColor:
-                                    rider.helmet_color === "#FFFFFF"
-                                      ? "#ccc"
-                                      : rider.helmet_color,
-                                }}
-                              />
-                            </div>
+                          // behåller dina gate-färger (domänspecifika)
+                          const gateStyle =
+                            rider.team === "home"
+                              ? gate === "1" || gate === "3"
+                                ? "border-l-4 border-red-600 bg-red-50 dark:bg-red-950/30"
+                                : "border-l-4 border-blue-600 bg-blue-50 dark:bg-blue-950/30"
+                              : gate === "2" || gate === "4"
+                                ? "border-l-4 border-yellow-500 bg-yellow-50 dark:bg-yellow-950/30"
+                                : "border-l-4 border-gray-300 bg-muted";
 
-                            <div className="font-medium text-xs mt-1">
-                              {rider.name}
-                            </div>
-
-                            {result && (
-                              <div className="mt-1">
-                                {result.status === "completed" && (
-                                  <Badge
-                                    className={`text-xs ${getPositionColor(
-                                      result.position
-                                    )}`}
-                                  >
-                                    {result.position}. ({result.points}
-                                    {bonus ? `+${bonus}` : ""} p)
-                                  </Badge>
-                                )}
-                                {result.status === "excluded" && (
-                                  <Badge className="text-xs bg-red-600">
-                                    <AlertTriangle className="w-3 h-3" />
-                                  </Badge>
-                                )}
+                          return (
+                            <Card
+                              key={gate}
+                              className={cn(
+                                "p-2 text-center shadow-none",
+                                "rounded-md border",
+                                gateStyle
+                              )}
+                            >
+                              <div className="flex items-center justify-center gap-1">
+                                {/* gate-badge */}
+                                <span className="w-5 h-5 bg-muted rounded-full text-xs flex items-center justify-center">
+                                  {gate}
+                                </span>
+                                {/* hjälmfärg-dot */}
+                                <span
+                                  className="w-3 h-3 rounded-full border"
+                                  style={{
+                                    backgroundColor: rider.helmet_color,
+                                    borderColor:
+                                      rider.helmet_color === "#FFFFFF"
+                                        ? "#ccc"
+                                        : rider.helmet_color,
+                                  }}
+                                />
                               </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                  </div>
 
-                  <div className="">
-                    <Button
-                      className="w-full"
-                      onClick={() => openDialogFor(heat)}
-                      size="sm"
-                      disabled={!canOpenThis}
-                      title={
-                        !canOpenThis
-                          ? `Låsning: Fyll i Heat ${heat.heat_number - 1} först`
-                          : undefined
-                      }
-                    >
-                      Registrera resultat
-                    </Button>
-                    {/* {heat.status === "completed" && (
-                      <Button size="sm" variant="outline">
-                        Redigera
-                      </Button>
-                    )} */}
-                  </div>
-                </div>
+                              <div className="font-medium text-xs mt-1 text-foreground">
+                                {rider.name}
+                              </div>
+
+                              {result && (
+                                <div className="mt-1">
+                                  {result.status === "completed" && (
+                                    <Badge className={cn("text-xs", getPositionColor(result.position))}>
+                                      {result.position}. ({result.points}
+                                      {bonus ? `+${bonus}` : ""} p)
+                                    </Badge>
+                                  )}
+
+                                  {result.status === "excluded" && (
+                                    <Badge className="text-xs bg-destructive text-destructive-foreground">
+                                      <AlertTriangle className="w-3 h-3" />
+                                    </Badge>
+                                  )}
+                                </div>
+                              )}
+                            </Card>
+                          );
+                        })}
+                    </div>
+                  </CardContent>
+
+                  <CardFooter>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            className="w-full"
+                            onClick={() => openDialogFor(heat)}
+                            size="sm"
+                            disabled={!canOpenThis}
+                          >
+                            <Play className="w-4 h-4 mr-2" />
+                            Registrera resultat
+                          </Button>
+                        </TooltipTrigger>
+                        {!canOpenThis && (
+                          <TooltipContent side="top">
+                            <p>Fyll i Heat {heat.heat_number - 1} först</p>
+                          </TooltipContent>
+                        )}
+                      </Tooltip>
+                    </TooltipProvider>
+                  </CardFooter>
+                </Card>
               );
             })}
+          </div>
+          <div className="sticky bottom-4 z-10 flex justify-end">
+            <ConfirmButton
+              title="Spara protokoll?"
+              description="Protokollet hamnar i Mina protokoll. Du kan öppna det senare."
+              confirmText="Spara"
+              cancelText="Avbryt"
+              triggerVariant="default"
+              actionVariant="default"
+              onConfirm={doSave}
+              disabled={!complete || saving}         // ← förs vidare till trigger-knappen
+              className="w-full min-w-[180px]"       // ← förs vidare till trigger-knappen
+            >
+              <Save className="w-4 h-4 mr-2" />
+              Spara protokoll
+            </ConfirmButton>
           </div>
         </CardContent>
       </Card>

@@ -8,6 +8,7 @@ import { Users, AlertTriangle } from "lucide-react";
 import { getUserMatches, resolveUserMatch, deleteMatch, getMatches } from "../api/matches";
 import { useAuth } from "../contexts/AuthContext";
 import MatchList from "../components/MatchList";
+import { toast } from "sonner";
 
 function formatDate(dateString) {
   return new Date(dateString).toLocaleDateString("sv-SE", {
@@ -62,15 +63,25 @@ export default function MyMatchesPage() {
     }
   };
 
+  // const handleDelete = async (id) => {
+  //   if (!window.confirm("Ta bort matchen?")) return;
+  //   try {
+  //     await deleteMatch(id);
+  //     setMatches((prev) => prev.filter((m) => m.id !== id));
+  //   } catch (e) {
+  //     alert("Kunde inte ta bort match: " + e.message);
+  //   }
+  // };
+
   const handleDelete = async (id) => {
-    if (!window.confirm("Ta bort matchen?")) return;
-    try {
-      await deleteMatch(id);
-      setMatches((prev) => prev.filter((m) => m.id !== id));
-    } catch (e) {
-      alert("Kunde inte ta bort match: " + e.message);
-    }
+    await toast.promise(deleteMatch(id), {
+      loading: "Tar bort…",
+      success: "Match borttagen",
+      error: "Kunde inte ta bort matchen",
+    });
+    setMatches((prev) => prev.filter((m) => m.id !== id));
   };
+
 
   return (
     <>
@@ -153,7 +164,7 @@ export default function MyMatchesPage() {
           </div>
         </CardContent>
       </Card>
-      <Card>
+      <Card className="mt-6">
         <CardHeader>
           <CardTitle className="flex items-center">
             <Calendar className="w-5 h-5 mr-2" />

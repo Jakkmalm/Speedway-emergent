@@ -266,7 +266,7 @@ export default function Header() {
                   }
                   onClick={() => setOpen(false)}
                 >
-                  Hej, <b className="text-muted-foreground">{user.username}</b>
+                  Hej, <b>{user.username}</b>
                 </NavLink>
                 <Button variant="outline" onClick={handleLogout}>
                   Logga ut
@@ -308,7 +308,7 @@ export default function Header() {
                 className={({ isActive }) =>
                   cx(
                     "block px-3 py-2 rounded-md text-sm font-medium transition",
-                    isActive ? "text-primary" : "text-muted-foreground"
+                    isActive ? "text-primary" : "text-muted-foreground hover:text-primary"
                   )
                 }
               >

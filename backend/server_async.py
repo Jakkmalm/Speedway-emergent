@@ -1202,7 +1202,7 @@ async def create_match(match_data: Dict[str, Any], user_id: str = Depends(verify
         "away_team_id": match_data["away_team_id"],
         "date": match_date,
         "venue": match_data.get("venue", ""),
-        "status": "upcoming",
+        # "status": "upcoming",
         "home_score": 0,
         "away_score": 0,
         "heats": heats,
@@ -1893,73 +1893,187 @@ async def update_nominations(
 
 
 
-# CONFIRM
+# CONFIRM TESTAR EN UPD VERSION UNDER
+
+# @app.put("/api/matches/{match_id}/confirm")
+# async def confirm_match(match_id: str, user_id: str = Depends(verify_jwt_token)) -> Dict[str, Any]:
+#     """
+#     Confirm a completed match and store it in the user's matches. Compares
+#     results with official results if available and marks discrepancies.
+#     """
+#     match = await matches_collection.find_one({"id": match_id})
+#     if not match:
+#         raise HTTPException(status_code=404, detail="Match hittades inte")
+
+#     # if not match:
+#     #     raise HTTPException(status_code=404, detail="Match hittades inte")
+#     # Ensure all heats are completed
+#     completed_heats = sum(1 for heat in match["heats"] if heat.get("status") == "completed")
+#     if completed_heats < 15:
+#         raise HTTPException(status_code=400, detail=f"Endast {completed_heats}/15 heat är avslutade")
+#     # Mark match as confirmed
+#     await matches_collection.update_one({"id": match_id}, {"$set": {"status": "confirmed"}})
+#     user_match_id = str(uuid.uuid4())
+#     user_match: Dict[str, Any] = {
+#         "id": user_match_id,
+#         "user_id": user_id,
+#         "match_id": match_id,
+#         "user_results": {
+#             "home_score": match["home_score"],
+#             "away_score": match["away_score"],
+#             "heats": match["heats"],
+#         },
+#         "status": "completed",
+#         "completed_at": datetime.utcnow(),
+#     }
+#     # Try to fetch official results and compare
+#     home_team = await teams_collection.find_one({"id": match["home_team_id"]})
+#     away_team = await teams_collection.find_one({"id": match["away_team_id"]})
+#     # Here we call the scraper. In this asynchronous version, the scraper should
+#     # ideally be asynchronous too. As a placeholder, we call a dummy function.
+#     official_results = await scrape_official_results(
+#         home_team["name"] if home_team else "", 
+#         away_team["name"] if away_team else "", 
+#         match["date"].strftime("%Y-%m-%d"),
+#     )
+#     if official_results:
+#         user_match["official_results"] = official_results
+#         discrepancies: List[Dict[str, Any]] = []
+#         if abs(match["home_score"] - official_results.get("home_score", 0)) > 0:
+#             discrepancies.append({
+#                 "type": "home_score",
+#                 "user_value": match["home_score"],
+#                 "official_value": official_results.get("home_score", 0),
+#             })
+#         if abs(match["away_score"] - official_results.get("away_score", 0)) > 0:
+#             discrepancies.append({
+#                 "type": "away_score",
+#                 "user_value": match["away_score"],
+#                 "official_value": official_results.get("away_score", 0),
+#             })
+#         if discrepancies:
+#             user_match["discrepancies"] = discrepancies
+#             user_match["status"] = "disputed"
+#     await user_matches_collection.insert_one(user_match)
+#     return {
+#         "message": "Match bekräftad och sparad",
+#         "user_match_id": user_match_id,
+#         "discrepancies": user_match.get("discrepancies", []),
+#     }
 
 @app.put("/api/matches/{match_id}/confirm")
-async def confirm_match(match_id: str, user_id: str = Depends(verify_jwt_token)) -> Dict[str, Any]:
-    """
-    Confirm a completed match and store it in the user's matches. Compares
-    results with official results if available and marks discrepancies.
-    """
-    match = await matches_collection.find_one({"id": match_id})
+async def confirm_match(
+    match_id: str,
+    user_id: str = Depends(verify_jwt_token),  # antag att denna returnerar user_id (str)
+) -> Dict[str, Any]:
+    # 1) Hämta match och säkerställ ägarskap
+    match = await matches_collection.find_one({"id": match_id, "created_by": user_id})
     if not match:
         raise HTTPException(status_code=404, detail="Match hittades inte")
 
-    # if not match:
-    #     raise HTTPException(status_code=404, detail="Match hittades inte")
-    # Ensure all heats are completed
-    completed_heats = sum(1 for heat in match["heats"] if heat.get("status") == "completed")
-    if completed_heats < 15:
-        raise HTTPException(status_code=400, detail=f"Endast {completed_heats}/15 heat är avslutade")
-    # Mark match as confirmed
-    await matches_collection.update_one({"id": match_id}, {"$set": {"status": "confirmed"}})
-    user_match_id = str(uuid.uuid4())
-    user_match: Dict[str, Any] = {
-        "id": user_match_id,
+    heats: List[Dict[str, Any]] = match.get("heats", [])
+    # 2) Fullständighetskontroll: 15 completed + minst 4 resultat per heat
+    if len(heats) < 15 or any(
+        (h.get("status") != "completed") or (len(h.get("results", [])) < 4)
+        for h in heats
+    ):
+        completed = sum(1 for h in heats if h.get("status") == "completed")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Match ej komplett. Klara heat: {completed}/15.",
+        )
+
+    # 3) Sätt matchstatus (idempotent; safe att köra flera gånger)
+    await matches_collection.update_one(
+        {"id": match_id},
+        {"$set": {"status": "confirmed", "confirmed_at": datetime.utcnow()}},
+    )
+
+    # 4) Förbered snapshot
+    user_results = {
+        "home_score": match.get("home_score", 0),
+        "away_score": match.get("away_score", 0),
+        "heats": heats,
+    }
+
+    # 5) Hämta officiella resultat (fel-tolerant)
+    home_team = await teams_collection.find_one({"id": match.get("home_team_id")})
+    away_team = await teams_collection.find_one({"id": match.get("away_team_id")})
+
+    # Datum → "YYYY-MM-DD" robust
+    mdate = match.get("date")
+    if isinstance(mdate, datetime):
+        date_str = mdate.strftime("%Y-%m-%d")
+    elif isinstance(mdate, str):
+        date_str = mdate[:10]  # funkar om str i format "YYYY-MM-DD..." 
+    else:
+        date_str = ""
+
+    official_results: Optional[Dict[str, Any]] = None
+    discrepancies: List[Dict[str, Any]] = []
+    status = "completed"
+
+    try:
+        official_results = await scrape_official_results(
+            home_team["name"] if home_team else "",
+            away_team["name"] if away_team else "",
+            date_str,
+        )
+        if official_results:
+            if match.get("home_score", 0) != official_results.get("home_score", 0):
+                discrepancies.append({
+                    "type": "home_score",
+                    "user_value": match.get("home_score", 0),
+                    "official_value": official_results.get("home_score", 0),
+                })
+            if match.get("away_score", 0) != official_results.get("away_score", 0):
+                discrepancies.append({
+                    "type": "away_score",
+                    "user_value": match.get("away_score", 0),
+                    "official_value": official_results.get("away_score", 0),
+                })
+            if discrepancies:
+                status = "disputed"
+    except Exception:
+        # logga gärna här
+        official_results = None
+
+    # 6) Idempotent upsert i user_matches
+    existing = await user_matches_collection.find_one(
+        {"user_id": user_id, "match_id": match_id}
+    )
+
+    base_doc = {
         "user_id": user_id,
         "match_id": match_id,
-        "user_results": {
-            "home_score": match["home_score"],
-            "away_score": match["away_score"],
-            "heats": match["heats"],
-        },
-        "status": "completed",
+        "user_results": user_results,
+        "official_results": official_results,
+        "discrepancies": discrepancies,
+        "status": status,
         "completed_at": datetime.utcnow(),
     }
-    # Try to fetch official results and compare
-    home_team = await teams_collection.find_one({"id": match["home_team_id"]})
-    away_team = await teams_collection.find_one({"id": match["away_team_id"]})
-    # Here we call the scraper. In this asynchronous version, the scraper should
-    # ideally be asynchronous too. As a placeholder, we call a dummy function.
-    official_results = await scrape_official_results(
-        home_team["name"] if home_team else "", 
-        away_team["name"] if away_team else "", 
-        match["date"].strftime("%Y-%m-%d"),
-    )
-    if official_results:
-        user_match["official_results"] = official_results
-        discrepancies: List[Dict[str, Any]] = []
-        if abs(match["home_score"] - official_results.get("home_score", 0)) > 0:
-            discrepancies.append({
-                "type": "home_score",
-                "user_value": match["home_score"],
-                "official_value": official_results.get("home_score", 0),
-            })
-        if abs(match["away_score"] - official_results.get("away_score", 0)) > 0:
-            discrepancies.append({
-                "type": "away_score",
-                "user_value": match["away_score"],
-                "official_value": official_results.get("away_score", 0),
-            })
-        if discrepancies:
-            user_match["discrepancies"] = discrepancies
-            user_match["status"] = "disputed"
-    await user_matches_collection.insert_one(user_match)
+
+    if existing:
+        await user_matches_collection.update_one(
+            {"_id": existing["_id"]},
+            {"$set": base_doc},
+        )
+        user_match_id = str(existing["_id"])
+    else:
+        # valfritt: eget id-fält
+        user_match_id = str(uuid.uuid4())
+        doc = {"id": user_match_id, **base_doc}
+        res = await user_matches_collection.insert_one(doc)
+        # om du hellre vill använda _id som primärnyckel, ställ inte in "id" själv
+
     return {
+        "ok": True,
         "message": "Match bekräftad och sparad",
         "user_match_id": user_match_id,
-        "discrepancies": user_match.get("discrepancies", []),
+        "status": status,
+        "discrepancies": discrepancies,
     }
+
 
 
 @app.get("/api/user/matches")

@@ -3,8 +3,10 @@ import React from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
-import { Play, Calendar } from "lucide-react";
+import { Play, Calendar, TrashIcon, Trash2Icon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { ConfirmButton } from "./ConfirmButton";
+
 
 function formatDate(dateString) {
   return new Date(dateString).toLocaleDateString("sv-SE", {
@@ -75,15 +77,15 @@ export default function MatchList({ matches, userId, onDelete }) {
             </Button>
 
             {/* Delete button */}
-            <Button
-              onClick={() => onDelete(match.id)}
-              size="sm"
-              variant="destructive"
-              className="sm:flex-none"
+            <ConfirmButton
+              title="Ta bort match?"
+              description="Detta går inte att ångra. Protokollet kommer att raderas."
+              confirmText="Ta bort"
+              onConfirm={() => onDelete(match.id)}
             >
               <span className="hidden sm:inline">Ta bort</span>
-              <span className="sm:hidden">✕</span>
-            </Button>
+              <span className="sm:hidden"><Trash2Icon /></span>
+            </ConfirmButton>
           </div>
 
           {/* <div className="flex items-center gap-2">

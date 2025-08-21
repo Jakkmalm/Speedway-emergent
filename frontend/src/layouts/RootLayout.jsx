@@ -4,6 +4,8 @@ import Header from "@/components/Header";
 import { Outlet, NavLink } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import { Trophy, Users, Calendar, Target } from "lucide-react";
+import Breadcrumbs from "@/components/Breadcrumbs";
+
 
 
 export default function RootLayout() {
@@ -20,7 +22,9 @@ export default function RootLayout() {
 
       {/* Sidinnehåll */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        
+        <Breadcrumbs />
+
+        {/* Navigering */}
         <Outlet />
       </main>
     </div>
