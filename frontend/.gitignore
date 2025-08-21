@@ -2,6 +2,7 @@
 
 #ENV
 .env
+.env.development.local
 
 hej.txt
 
