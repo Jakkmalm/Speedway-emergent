@@ -68,8 +68,8 @@ client = None
 db = None
 
 FRONTEND_ORIGINS = [
-    "http://localhost:3000",  # För lokal utveckling
-    # "https://speedway-frontend-production.up.railway.app", # Produktion
+    # "http://localhost:3000",  # För lokal utveckling
+    "https://speedway-frontend-production.up.railway.app" # Produktion
 ]
 
 # Allow CORS from all origins (adjust in production)
