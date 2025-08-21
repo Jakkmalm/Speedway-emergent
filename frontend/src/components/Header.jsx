@@ -266,7 +266,7 @@ export default function Header() {
                   }
                   onClick={() => setOpen(false)}
                 >
-                  Hej, <b>{user.username}</b>
+                  Hej, <b className="text-muted-foreground">{user.username}</b>
                 </NavLink>
                 <Button variant="outline" onClick={handleLogout}>
                   Logga ut

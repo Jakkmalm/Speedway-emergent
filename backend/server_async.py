@@ -30,6 +30,7 @@ import jwt
 import bcrypt
 from helpers.schedule_elit import ELITSERIEN_2_15_7, COLOR_TO_TEAM, COLOR_TO_HELMET
 from services.meta_rules import DEFAULT_RULES
+from config import FRONTEND_ORIGINS, MONGO_URL
 
 
 
@@ -67,10 +68,6 @@ app = FastAPI(title="Speedway Elitserien API (Async)")
 client = None
 db = None
 
-FRONTEND_ORIGINS = [
-    # "http://localhost:3000",  # För lokal utveckling
-    "https://speedway-frontend-production.up.railway.app" # Produktion
-]
 
 # Allow CORS from all origins (adjust in production)
 app.add_middleware(
