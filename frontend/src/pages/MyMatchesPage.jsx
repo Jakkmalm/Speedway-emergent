@@ -25,6 +25,7 @@ export default function MyMatchesPage() {
   const [userMatches, setUserMatches] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingResolve, setLoadingResolve] = useState(false);
+  const [resolving, setResolving] = useState({}); // { [userMatchId]: true/false }
 
   const { user } = useAuth();
   const [matches, setMatches] = useState([]);
@@ -52,16 +53,40 @@ export default function MyMatchesPage() {
     loadMatches();
   }, []);
 
+  // const resolve = async (userMatchId, action) => {
+  //   setLoadingResolve(true);
+  //   try {
+  //     await resolveUserMatch(userMatchId, action);
+  //     await loadUserMatches();
+  //     alert("Konflikt löst!");
+  //   } catch (e) {
+  //     alert("Kunde inte lösa konflikt: " + e.message);
+  //   } finally {
+  //     setLoadingResolve(false);
+  //   }
+  // };
   const resolve = async (userMatchId, action) => {
-    setLoading(true);
+    // setLoadingResolve(true);
+    // try {
+    //   await toast.promise(resolveUserMatch(userMatchId, action), {
+    //     loading: "Uppdaterar…",
+    //     success: "Konflikt uppdaterad",
+    //     error: (e) => e?.message || "Kunde inte lösa konflikten",
+    //   });
+    //   await loadUserMatches();
+    // } finally {
+    //   setLoadingResolve(false);
+    // }
+    setResolving(p => ({ ...p, [userMatchId]: true }));
     try {
-      await resolveUserMatch(userMatchId, action);
-      await load();
-      alert("Konflikt löst!");
-    } catch (e) {
-      alert("Kunde inte lösa konflikt: " + e.message);
+      await toast.promise(resolveUserMatch(userMatchId, action), {
+        loading: "Uppdaterar…",
+        success: "Konflikt uppdaterad",
+        error: (e) => e?.message || "Kunde inte lösa konflikten",
+      });
+      await loadUserMatches();
     } finally {
-      setLoading(false);
+      setResolving(p => ({ ...p, [userMatchId]: false }));
     }
   };
 
@@ -108,7 +133,8 @@ export default function MyMatchesPage() {
                   key={um.id || um._id}
                   userMatch={um}
                   onResolve={resolve}
-                  loadingResolve={loadingResolve}
+                  // loadingResolve={loadingResolve}
+                  loadingResolve={!!resolving[um.id || um._id]} // per-kort disable
                 />
               ))
             )}

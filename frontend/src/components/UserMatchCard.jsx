@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ChevronDown, ChevronRight, AlertTriangle, Calendar } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ConfirmButton } from "@/components/ConfirmButton";
 
 function formatDate(dateString) {
     if (!dateString) return "";
@@ -51,6 +52,8 @@ export default function UserMatchCard({
         official_results,
         match_details,
     } = userMatch || {};
+
+    const userMatchId = id ?? _id; // säkert id
 
     const title = useMemo(() => {
         const home = match_details?.home_team || "Hemmalag";
@@ -123,7 +126,38 @@ export default function UserMatchCard({
                             ))}
                         </div>
                         <div className="flex gap-2 mt-3">
-                            <Button
+                            <ConfirmButton
+                                title="Acceptera officiellt resultat?"
+                                description="Det officiella resultatet ersätter dina poäng i denna match."
+                                confirmText="Acceptera"
+                                cancelText="Avbryt"
+                                triggerVariant="default"
+                                triggerSize="sm"
+                                actionVariant="default"
+                                onConfirm={async () => {
+                                    await onResolve?.(userMatchId, "accept_official");
+                                }}
+                                disabled={loadingResolve}   // går via ...triggerProps i ConfirmButton
+                            >
+                                Acceptera officiellt
+                            </ConfirmButton>
+
+                            <ConfirmButton
+                                title="Behåll ditt resultat?"
+                                description="Dina ifyllda poäng behålls och markeras som validerade."
+                                confirmText="Behåll"
+                                cancelText="Avbryt"
+                                triggerVariant="outline"
+                                triggerSize="sm"
+                                actionVariant="outline"
+                                onConfirm={async () => {
+                                    await onResolve?.(userMatchId, "keep_user");
+                                }}
+                                disabled={loadingResolve}
+                            >
+                                Behåll mitt
+                            </ConfirmButton>
+                            {/* <Button
                                 size="sm"
                                 onClick={() => onResolve?.(id, "accept_official")}
                                 disabled={loadingResolve}
@@ -137,7 +171,7 @@ export default function UserMatchCard({
                                 disabled={loadingResolve}
                             >
                                 Behåll mitt
-                            </Button>
+                            </Button> */}
                         </div>
                     </div>
                 </CardContent>
