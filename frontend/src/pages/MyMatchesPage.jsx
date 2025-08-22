@@ -212,12 +212,19 @@ export default function MyMatchesPage() {
             ) : (
               <div className="space-y-4">
                 {asArray(userMatches).map((um) => (
-                  <UserMatchCard
-                    key={um.id || um._id}
-                    userMatch={um}
-                    onResolve={resolve}
-                    loadingResolve={!!resolving[um.id || um._id]}
-                  />
+                  <>
+                    <UserMatchCard
+                      key={um.id || um._id}
+                      userMatch={um}
+                      onResolve={resolve}
+                      loadingResolve={!!resolving[um.id || um._id]}
+                    />
+                    <PaginationBar
+                      page={openPage}
+                      pageCount={openPageCount}
+                      onPageChange={setOpenPage}
+                    />
+                  </>
                 ))}
               </div>
             )}
