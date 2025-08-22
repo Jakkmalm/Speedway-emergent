@@ -3,9 +3,17 @@ import { apiCall, API_BASE_URL } from "./client";
 
 // ---- Matches (list, details) ----
 export const getMatches = () => apiCall("/api/matches");
+
 export const getMatchById = (id) => apiCall(`/api/matches/${id}`);
+
 export const deleteMatch = (id) =>
   apiCall(`/api/matches/${id}`, { method: "DELETE", body: JSON.stringify({}) });
+
+export const deleteUserMatch = (userMatchId) =>
+  apiCall(`/api/user-matches/${userMatchId}`, { method: "DELETE", body: JSON.stringify({}) });
+
+export const deleteUserMatchCascade = (userMatchId) =>
+  apiCall(`/api/user-matches/${userMatchId}`, { method: "DELETE", body: JSON.stringify({}) });
 
 // ---- Create from official / list official ----
 export const getOfficialMatches = async () => {

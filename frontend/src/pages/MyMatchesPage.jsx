@@ -1,5 +1,5 @@
 // src/pages/MyMatchesPage.jsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "../components/ui/card";
 import { Calendar } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -10,6 +10,15 @@ import { useAuth } from "../contexts/AuthContext";
 import MatchList from "../components/MatchList";
 import UserMatchCard from "@/components/UserMatchCard";
 import { toast } from "sonner";
+import { deleteUserMatchCascade } from "@/api/matches";
+// import { UserMatchCardSkeleton } from "@/components/skeletons/UserMatchCardSkeleton";
+// import { MatchListSkeleton } from "@/components/skeletons/MatchListSkeleton";
+// import { MatchRowSkeleton } from "@/components/skeletons/MatchRowSkeleton";
+import { LoadingBlock } from "@/components/LoadingState";
+import { withMinDelay } from "@/lib/withMinDelay";
+import { asArray } from "@/lib/asArray";
+import { usePagination } from "@/hooks/usePagination";
+import { PaginationBar } from "@/components/PaginationBar";
 
 function formatDate(dateString) {
   return new Date(dateString).toLocaleDateString("sv-SE", {
@@ -22,17 +31,18 @@ function formatDate(dateString) {
 }
 
 export default function MyMatchesPage() {
-  const [userMatches, setUserMatches] = useState([]);
+  const [userMatches, setUserMatches] = useState(null);
   const [loading, setLoading] = useState(false);
   const [loadingResolve, setLoadingResolve] = useState(false);
   const [resolving, setResolving] = useState({}); // { [userMatchId]: true/false }
 
   const { user } = useAuth();
-  const [matches, setMatches] = useState([]);
+  const [matches, setMatches] = useState(null);
+  const [deleting, setDeleting] = useState({}); // valfritt per-kort-lås
 
   const loadUserMatches = async () => {
     try {
-      const data = await getUserMatches();
+      const data = await withMinDelay(getUserMatches(), 350);
       setUserMatches(data);
     } catch (e) {
       console.error("Error loading user matches:", e);
@@ -41,12 +51,41 @@ export default function MyMatchesPage() {
 
   const loadMatches = async () => {
     try {
-      const m = await getMatches();
+      const m = await withMinDelay(getMatches(), 350);
       setMatches(m);
     } catch (e) {
       console.error("Error loading matches:", e);
     }
   };
+
+  // const openMatches = useMemo(() => {
+  //   return matches.filter(
+  //     (m) => m.created_by === user?.id && (m.status || "").toLowerCase() !== "confirmed"
+  //   );
+  // }, [matches, user?.id]);
+
+
+  // NULL-kontroll och filtrering av matcher
+  const openMatches = useMemo(
+    () =>
+      asArray(matches).filter(
+        (m) =>
+          m?.created_by === user?.id &&
+          String(m?.status || "").toLowerCase() !== "confirmed"
+      ),
+    [matches, user?.id]
+  );
+
+
+  // Sidindelning för protokoll – 5 per sida
+  const {
+    page: openPage,
+    setPage: setOpenPage,
+    pageCount: openPageCount,
+    pageItems: openPageItems,
+  } = usePagination(openMatches, 4);
+
+
 
   useEffect(() => {
     loadUserMatches();
@@ -100,6 +139,7 @@ export default function MyMatchesPage() {
   //   }
   // };
 
+  // Hantera borttagning av "protokoll""
   const handleDelete = async (id) => {
     await toast.promise(deleteMatch(id), {
       loading: "Tar bort…",
@@ -107,6 +147,25 @@ export default function MyMatchesPage() {
       error: "Kunde inte ta bort matchen",
     });
     setMatches((prev) => prev.filter((m) => m.id !== id));
+  };
+
+
+  // Hantera borttagning av sparade matcher
+  const handleDeleteSaved = async (userMatchId, matchId) => {
+    setDeleting(p => ({ ...p, [userMatchId]: true }));
+    try {
+      await toast.promise(deleteUserMatchCascade(userMatchId), {
+        loading: "Tar bort…",
+        success: "Match borttagen",
+        error: (e) => e?.message || "Kunde inte ta bort matchen",
+      });
+
+      // Plocka bort korten lokalt
+      setUserMatches(prev => prev.filter(um => (um.id || um._id) !== userMatchId));
+      setMatches(prev => prev.filter(m => m.id !== matchId)); // ifall du visar protokoll-listan på samma sida
+    } finally {
+      setDeleting(p => ({ ...p, [userMatchId]: false }));
+    }
   };
 
 
@@ -123,7 +182,7 @@ export default function MyMatchesPage() {
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            {userMatches.length === 0 ? (
+            {/* {userMatches.length === 0 ? (
               <p className="text-muted-foreground text-center py-8">
                 Du har inte fyllt i några matcher än
               </p>
@@ -133,94 +192,40 @@ export default function MyMatchesPage() {
                   key={um.id || um._id}
                   userMatch={um}
                   onResolve={resolve}
+                  onDelete={handleDeleteSaved}
                   // loadingResolve={loadingResolve}
                   loadingResolve={!!resolving[um.id || um._id]} // per-kort disable
                 />
               ))
+            )} */}
+            {userMatches === null ? (
+              <div className="space-y-4">
+                <LoadingBlock
+                  text="Hämtar sparade matcher"
+                />
+
+              </div>
+            ) : asArray(userMatches).length === 0 ? (
+              <p className="text-muted-foreground text-center py-8">
+                Du har inte fyllt i några matcher än
+              </p>
+            ) : (
+              <div className="space-y-4">
+                {asArray(userMatches).map((um) => (
+                  <UserMatchCard
+                    key={um.id || um._id}
+                    userMatch={um}
+                    onResolve={resolve}
+                    loadingResolve={!!resolving[um.id || um._id]}
+                  />
+                ))}
+              </div>
             )}
           </div>
         </CardContent>
       </Card>
-      {/* <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center">
-            <Users className="w-5 h-5 mr-2" />
-            Mina matcher
-          </CardTitle>
-          <CardDescription>Matcher du har fyllt i protokoll för</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            {userMatches.length === 0 ? (
-              <p className="text-gray-500 text-center py-8">Du har inte fyllt i några matcher än</p>
-            ) : (
-              userMatches.map((userMatch) => {
-                const { match_details, user_results, official_results, discrepancies, status } = userMatch;
-                return (
-                  <div key={userMatch.id} className="border rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center space-x-4">
-                        <div className="font-semibold">
-                          {match_details?.home_team} vs {match_details?.away_team}
-                        </div>
-                        <Badge variant={
-                          status === "validated" ? "default" :
-                            status === "disputed" ? "destructive" : "secondary"
-                        }>
-                          {status === "validated" ? "Validerad" :
-                            status === "disputed" ? "Konflikt" : "Komplett"}
-                        </Badge>
-                      </div>
-                      <div className="text-right">
-                        <div className="font-bold">
-                          {user_results?.home_score} - {user_results?.away_score}
-                        </div>
-                        <div className="text-xs text-gray-500">{formatDate(match_details?.date)}</div>
-                      </div>
-                    </div>
-
-                    {discrepancies && discrepancies.length > 0 && (
-                      <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded">
-                        <div className="flex items-center mb-2">
-                          <AlertTriangle className="w-4 h-4 text-yellow-600 mr-2" />
-                          <span className="font-medium text-yellow-800">Avvikelser upptäckta</span>
-                        </div>
-                        <div className="space-y-2 text-sm">
-                          {discrepancies.map((disc, i) => (
-                            <div key={`${disc.type}-${i}`} className="flex justify-between">
-                              <span>{disc.type === "home_score" ? "Hemmalag poäng" : "Bortalag poäng"}:</span>
-                              <span>Du: {disc.user_value} | Officiellt: {disc.official_value}</span>
-                            </div>
-                          ))}
-                        </div>
-                        <div className="flex space-x-2 mt-3">
-                          <Button size="sm" onClick={() => resolve(userMatch.id, "accept_official")} disabled={loading}>
-                            Acceptera officiellt
-                          </Button>
-                          <Button size="sm" variant="outline" onClick={() => resolve(userMatch.id, "keep_user")} disabled={loading}>
-                            Behåll mitt
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-
-                    {official_results && discrepancies.length === 0 && (
-                      <div className="mt-2 text-sm text-gray-600">
-                        Officiellt resultat:{" "}
-                        <span className="font-medium">
-                          {official_results.home_score} - {official_results.away_score}
-                        </span>{" "}
-                        (från {official_results.source || "källa okänd"})
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </CardContent>
-      </Card> */}
-      <Card className="mt-6">
+      {/* Skapade matcher */}
+      {/* <Card className="mt-6">
         <CardHeader>
           <CardTitle className="flex items-center">
             <Calendar className="w-5 h-5 mr-2" />
@@ -228,11 +233,51 @@ export default function MyMatchesPage() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <MatchList
-            matches={matches}
-            userId={user?.id}
-            onDelete={handleDelete}
-          />
+          {matches === null ? (
+            <LoadingBlock
+              text="Hämtar protokoll" />
+          ) : (
+
+            <>
+              <MatchList
+                matches={asArray(openMatches)}
+                userId={user?.id}
+                onDelete={handleDelete}
+              />
+              <PaginationBar
+                page={openPage}
+                pageCount={openPageCount}
+                onPageChange={setOpenPage}
+              />
+            </>
+          )}
+        </CardContent>
+      </Card> */}
+      <Card className="mt-6">
+        {/* ...header */}
+        <CardHeader>
+          <CardTitle className="flex items-center">
+            <Calendar className="w-5 h-5 mr-2" />
+            Skapade matcher
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {matches === null ? (
+            <LoadingBlock text="Hämtar protokoll" />
+          ) : (
+            <>
+              <MatchList
+                matches={openPageItems}
+                userId={user?.id}
+                onDelete={handleDelete}
+              />
+              <PaginationBar
+                page={openPage}
+                pageCount={openPageCount}
+                onPageChange={setOpenPage}
+              />
+            </>
+          )}
         </CardContent>
       </Card>
 

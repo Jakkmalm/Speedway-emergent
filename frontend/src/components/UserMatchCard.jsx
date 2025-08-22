@@ -3,7 +3,7 @@ import React, { useState, useMemo, useCallback } from "react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ChevronDown, ChevronRight, AlertTriangle, Calendar } from "lucide-react";
+import { ChevronDown, ChevronRight, AlertTriangle, Calendar, Trash2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ConfirmButton } from "@/components/ConfirmButton";
 
@@ -40,7 +40,8 @@ function heatPointsLine(heat) {
 export default function UserMatchCard({
     userMatch,
     onResolve,     // (userMatchId, action) => Promise
-    loadingResolve // boolean
+    loadingResolve, // boolean
+    onDelete, // (userMatchId, matchId) => Promise
 }) {
     const [open, setOpen] = useState(false);
 
@@ -54,6 +55,8 @@ export default function UserMatchCard({
     } = userMatch || {};
 
     const userMatchId = id ?? _id; // säkert id
+
+    const matchId = userMatch?.match_id; // säkert id?
 
     const title = useMemo(() => {
         const home = match_details?.home_team || "Hemmalag";
@@ -72,35 +75,48 @@ export default function UserMatchCard({
     const toggle = useCallback(() => setOpen((o) => !o), []);
 
     return (
-        <Card className="border hover:shadow-md transition">
-            <button
-                type="button"
-                onClick={toggle}
-                className="w-full text-left"
-                aria-expanded={open}
-            >
-                <CardHeader className="flex flex-row items-center gap-3">
-                    <div className="shrink-0">
-                        {open ? <ChevronDown className="h-5 w-5 text-muted-foreground" /> : <ChevronRight className="h-5 w-5 text-muted-foreground" />}
-                    </div>
+        <Card className="border hover:shadow-md transition cursor-pointer"
+            onClick={toggle}
+            aria-expanded={open}>
+            <CardHeader className="flex flex-row items-center gap-3">
+                <div className="shrink-0">
+                    {open ? <ChevronDown className="h-5 w-5 text-muted-foreground" /> : <ChevronRight className="h-5 w-5 text-muted-foreground" />}
+                </div>
 
-                    <div className="flex-1">
-                        <CardTitle className="flex items-center gap-3">
-                            <span>{title}</span>
-                            <Badge variant={statusBadgeVariant(status)}>
-                                {status === "validated" ? "Validerad" :
-                                    status === "disputed" ? "Konflikt" : "Komplett"}
-                            </Badge>
-                        </CardTitle>
-                        <CardDescription className="mt-1 flex items-center gap-2">
-                            <span className="font-medium">{score}</span>
-                            <span className="text-muted-foreground">•</span>
-                            <Calendar className="w-4 h-4 text-muted-foreground" />
-                            <span>{dateStr}</span>
-                        </CardDescription>
-                    </div>
-                </CardHeader>
-            </button>
+                <div className="flex-1">
+                    <CardTitle className="flex items-center gap-3">
+                        <span>{title}</span>
+                        <Badge variant={statusBadgeVariant(status)}>
+                            {status === "validated" ? "Validerad" :
+                                status === "disputed" ? "Konflikt" : "Komplett"}
+                        </Badge>
+                    </CardTitle>
+                    <CardDescription className="mt-1 flex items-center gap-2">
+                        <span className="font-medium">{score}</span>
+                        <span className="text-muted-foreground">•</span>
+                        <Calendar className="w-4 h-4 text-muted-foreground" />
+                        <span>{dateStr}</span>
+                    </CardDescription>
+                </div>
+                <div className="ml-auto" onClick={(e) => e.stopPropagation()}>
+                    <ConfirmButton
+                        title="Ta bort sparad match?"
+                        description="Tar bort posten från Mina matcher och det underliggande protokollet. Kan inte ångras."
+                        confirmText="Ta bort"
+                        cancelText="Avbryt"
+                        triggerVariant="ghost"
+                        triggerSize="icon"
+                        actionVariant="destructive"
+                        onConfirm={async () => {
+                            await onDelete?.(userMatchId, matchId);
+                        }}
+                        aria-label="Ta bort match"
+                    >
+                        <Trash2Icon className="h-4 w-4" />
+                    </ConfirmButton>
+                </div>
+            </CardHeader>
+
 
             {/* Discrepancy-banner (klick på knapparna ska INTE toggla kortet) */}
             {discrepancies.length > 0 && (

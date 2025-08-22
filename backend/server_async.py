@@ -20,7 +20,7 @@ import os
 import uuid
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
-
+from bson import ObjectId
 from fastapi import FastAPI, HTTPException, Depends, status, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
@@ -1259,6 +1259,33 @@ async def delete_match(match_id: str, user_id: str = Depends(verify_jwt_token)) 
         raise HTTPException(status_code=403, detail="Inte behörig att ta bort den här matchen")
     await matches_collection.delete_one({"id": match_id})
     return {"message": "Match borttagen"}
+
+@app.delete("/api/user-matches/{user_match_id}")
+async def delete_user_match(
+    user_match_id: str,
+    user_id: str = Depends(verify_jwt_token),
+):
+    # Bygg query som klarar både "id" och "_id"
+    query = {"user_id": user_id, "$or": [{"id": user_match_id}]}
+    if ObjectId.is_valid(user_match_id):
+        query["$or"].append({"_id": ObjectId(user_match_id)})
+
+    um = await user_matches_collection.find_one(query)
+    if not um:
+        raise HTTPException(status_code=404, detail="Hittade inte matchen i Mina matcher")
+
+    # 1) Ta bort posten i user_matches
+    if um.get("_id"):
+        await user_matches_collection.delete_one({"_id": um["_id"]})
+    else:
+        await user_matches_collection.delete_one({"id": user_match_id})
+
+    # 2) Försök ta bort själva protokollet i matches om DU äger det
+    match_id = um.get("match_id")
+    if match_id:
+        await matches_collection.delete_one({"id": match_id, "created_by": user_id})
+
+    return {"ok": True}
 
 
 # UPDATEAD GÄLLER
