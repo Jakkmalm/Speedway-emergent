@@ -8,6 +8,7 @@ import { Users, AlertTriangle } from "lucide-react";
 import { getUserMatches, resolveUserMatch, deleteMatch, getMatches } from "../api/matches";
 import { useAuth } from "../contexts/AuthContext";
 import MatchList from "../components/MatchList";
+import UserMatchCard from "@/components/UserMatchCard";
 import { toast } from "sonner";
 
 function formatDate(dateString) {
@@ -23,6 +24,7 @@ function formatDate(dateString) {
 export default function MyMatchesPage() {
   const [userMatches, setUserMatches] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadingResolve, setLoadingResolve] = useState(false);
 
   const { user } = useAuth();
   const [matches, setMatches] = useState([]);
@@ -85,7 +87,35 @@ export default function MyMatchesPage() {
 
   return (
     <>
+      {/* Mina matcher */}
       <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Users className="w-5 h-5" />
+            Mina matcher
+          </CardTitle>
+          <CardDescription>Matcher du har fyllt i protokoll för</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {userMatches.length === 0 ? (
+              <p className="text-muted-foreground text-center py-8">
+                Du har inte fyllt i några matcher än
+              </p>
+            ) : (
+              userMatches.map((um) => (
+                <UserMatchCard
+                  key={um.id || um._id}
+                  userMatch={um}
+                  onResolve={resolve}
+                  loadingResolve={loadingResolve}
+                />
+              ))
+            )}
+          </div>
+        </CardContent>
+      </Card>
+      {/* <Card>
         <CardHeader>
           <CardTitle className="flex items-center">
             <Users className="w-5 h-5 mr-2" />
@@ -163,7 +193,7 @@ export default function MyMatchesPage() {
             )}
           </div>
         </CardContent>
-      </Card>
+      </Card> */}
       <Card className="mt-6">
         <CardHeader>
           <CardTitle className="flex items-center">
