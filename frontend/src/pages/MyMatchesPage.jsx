@@ -83,7 +83,16 @@ export default function MyMatchesPage() {
     setPage: setOpenPage,
     pageCount: openPageCount,
     pageItems: openPageItems,
-  } = usePagination(openMatches, 4);
+  } = usePagination(openMatches, 5);
+
+  // Sidindelning för "Mina matcher" – 5 per sida
+  const userMatchesArr = asArray(userMatches);
+  const {
+    page: umPage,
+    setPage: setUmPage,
+    pageCount: umPageCount,
+    pageItems: umPageItems,
+  } = usePagination(userMatchesArr, 5);
 
 
 
@@ -180,24 +189,8 @@ export default function MyMatchesPage() {
           </CardTitle>
           <CardDescription>Matcher du har fyllt i protokoll för</CardDescription>
         </CardHeader>
-        <CardContent>
+        {/* <CardContent>
           <div className="space-y-4">
-            {/* {userMatches.length === 0 ? (
-              <p className="text-muted-foreground text-center py-8">
-                Du har inte fyllt i några matcher än
-              </p>
-            ) : (
-              userMatches.map((um) => (
-                <UserMatchCard
-                  key={um.id || um._id}
-                  userMatch={um}
-                  onResolve={resolve}
-                  onDelete={handleDeleteSaved}
-                  // loadingResolve={loadingResolve}
-                  loadingResolve={!!resolving[um.id || um._id]} // per-kort disable
-                />
-              ))
-            )} */}
             {userMatches === null ? (
               <div className="space-y-4">
                 <LoadingBlock
@@ -229,6 +222,38 @@ export default function MyMatchesPage() {
               </div>
             )}
           </div>
+        </CardContent> */}
+        <CardContent>
+          {userMatches === null ? (
+            <div className="space-y-4">
+              <LoadingBlock text="Hämtar sparade matcher" />
+            </div>
+          ) : userMatchesArr.length === 0 ? (
+            <p className="text-muted-foreground text-center py-8">
+              Du har inte fyllt i några matcher än
+            </p>
+          ) : (
+            <>
+              <div className="space-y-4">
+                {umPageItems.map((um) => (
+                  <UserMatchCard
+                    key={um.id || um._id}
+                    userMatch={um}
+                    onResolve={resolve}
+                    loadingResolve={!!resolving[um.id || um._id]}
+                  // Om du har borttagning av sparade matcher:
+                  // onDelete={(userMatchId, matchId) => handleDeleteSaved(userMatchId, matchId)}
+                  />
+                ))}
+              </div>
+
+              <PaginationBar
+                page={umPage}
+                pageCount={umPageCount}
+                onPageChange={setUmPage}
+              />
+            </>
+          )}
         </CardContent>
       </Card>
       {/* Skapade matcher */}
