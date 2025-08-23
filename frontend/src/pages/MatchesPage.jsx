@@ -150,7 +150,13 @@ export default function MatchesPage() {
                       {new Date(m.date).toLocaleTimeString([], {
                         hour: "2-digit",
                         minute: "2-digit",
+                      })}{" "}
+                      {new Date(m.date).toLocaleDateString("sv-SE", {
+                        day: "numeric",
+                        month: "short",
+                        year: "numeric",
                       })}
+                      
                     </SelectItem>
                   ))}
                 </SelectContent>

@@ -286,7 +286,7 @@
 
 # ASYNC-VERSION
 
-# scraping/flashscore_async.py
+# scraping/flashscore.py
 from bs4 import BeautifulSoup
 from datetime import datetime
 from typing import List, Dict, Optional
