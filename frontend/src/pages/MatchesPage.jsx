@@ -26,7 +26,7 @@ import {
   getMatchById,
 } from "../api/matches";
 import { useAuth } from "../contexts/AuthContext";
-import MatchList from "../components/MatchList";
+import { toast } from "sonner";
 
 export default function MatchesPage() {
   const { user } = useAuth();
@@ -72,22 +72,19 @@ export default function MatchesPage() {
     run();
   }, [user]);
 
+
   // const onSelectOfficial = async (officialId) => {
   //   setSelectedOfficialId(officialId);
   //   const m = official.find((x) => x.id === officialId);
   //   if (!m) return;
 
   //   try {
-  //     const res = await createFromOfficial(m.id); // bör returnera { match_id } eller { match }
-  //     // const createdId = res.match?.id || res.match_id;
-
-  //     const createdId = await getMatchById(match_id);
-
-  //     setMatches((prev) => (res.match ? [res.match, ...prev] : prev));
-
-  //     navigate(`/match/${createdId}`);
+  //     const { match_id } = await createFromOfficial(m.id);
+  //     const created = await getMatchById(match_id); // token följer med
+  //     setMatches((prev) => [created, ...prev]);
+  //     navigate(`/match/${match_id}`);
   //   } catch (e) {
-  //     alert("Kunde inte skapa match från official: " + e.message);
+  //     alert("Kunde inte skapa/ladda matchen: " + e.message);
   //   }
   // };
 
@@ -97,14 +94,36 @@ export default function MatchesPage() {
     if (!m) return;
 
     try {
-      const { match_id } = await createFromOfficial(m.id);
-      const created = await getMatchById(match_id); // token följer med
-      setMatches((prev) => [created, ...prev]);
-      navigate(`/match/${match_id}`);
+      // Skapar (eller återanvänder) protokollet för vald officiell match
+      const res = await createFromOfficial(m.id);
+
+      // Backend returnerar 200 även om matchen redan fanns (res.match_id finns då)
+      if (res?.match_id) {
+        const created = await getMatchById(res.match_id);
+        setMatches((prev) => [created, ...prev.filter(mm => mm.id !== res.match_id)]);
+        navigate(`/match/${res.match_id}`);
+        return;
+      }
+
+      toast("Kunde inte skapa matchen");
+
     } catch (e) {
-      alert("Kunde inte skapa/ladda matchen: " + e.message);
+      // 409 = redan färdigställd (ligger i Mina matcher)
+      if (e.status === 409) {
+        toast("Du har redan färdigställt denna match", {
+          description: "Öppna Mina matcher för att se resultatet.",
+          action: { label: "Mina matcher", onClick: () => navigate("/my-matches") },
+          duration: 6000,
+        });
+        return; // navigera inte till protokoll
+      }
+      // Övriga fel
+      toast.error(e.message || "Något gick fel");
     }
   };
+
+
+
 
   // const handleDelete = async (id) => {
   //   if (!window.confirm("Ta bort matchen?")) return;
@@ -156,7 +175,7 @@ export default function MatchesPage() {
                         month: "short",
                         year: "numeric",
                       })}
-                      
+
                     </SelectItem>
                   ))}
                 </SelectContent>

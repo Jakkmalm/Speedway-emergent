@@ -270,6 +270,24 @@ async def get_owned_match_or_403(matches_collection, match_id: str, user_id: str
         raise HTTPException(status_code=403, detail="Inte behörig")
     return match
 
+# TESTAR FIX FÖR DUBLETTER
+async def _already_finalized_for_user(user_id: str, home_team_id: str, away_team_id: str, match_date: datetime) -> tuple[dict|None, bool]:
+    """Returnerar (existing_match_doc, finalized_bool) för användaren och match-triplett."""
+    existing = await matches_collection.find_one({
+        "created_by": user_id,
+        "home_team_id": home_team_id,
+        "away_team_id": away_team_id,
+        "date": match_date,
+    })
+    if not existing:
+        return None, False
+
+    # färdigställd om matchen är confirmed ELLER om det finns user_match för den
+    finalized = (existing.get("status") == "confirmed") or bool(
+        await user_matches_collection.find_one({"user_id": user_id, "match_id": existing["id"]})
+    )
+    return existing, finalized
+
 
     # Antag att du har dessa Mongo-collections:
 # matches_collection, teams_collection, riders_collection
@@ -2107,6 +2125,10 @@ async def sync_teams_from_official() -> Dict[str, Any]:
 #     await matches_collection.insert_one(match_doc)
 #     return {"message":"Match skapad från official", "match_id": match_id}
 
+
+
+
+
 @app.post("/api/matches/from-official")
 async def create_match_from_official(
     body: CreateFromOfficialIn,
@@ -2126,12 +2148,20 @@ async def create_match_from_official(
     ) if "Z" in official["date"] else datetime.fromisoformat(official["date"])
 
     # --- NYCKEL + krockskydd ---
-    match_key = build_match_key(home["id"], away["id"], match_date)
-    existing = await matches_collection.find_one({
-        "created_by": user_id,
-        "match_key": match_key,
-    })
+    # match_key = build_match_key(home["id"], away["id"], match_date)
+    # existing = await matches_collection.find_one({
+    #     "created_by": user_id,
+    #     "match_key": match_key,
+    # })
+    # if existing:
+    #     return {"message": "Match fanns redan", "match_id": existing["id"]}
+    
+    existing, finalized = await _already_finalized_for_user(user_id, home["id"], away["id"], match_date)
     if existing:
+        if finalized:
+            # ← Blockera och ge tydligt 409
+            raise HTTPException(status_code=409, detail="Du har redan färdigställt denna match.")
+        # Tillåtet att återuppta pågående protokoll → returnera befintligt id
         return {"message": "Match fanns redan", "match_id": existing["id"]}
 
     heats: List[Dict[str, Any]] = await generate_match_heats(
@@ -2155,7 +2185,7 @@ async def create_match_from_official(
         "created_at": datetime.utcnow(),
         "official_match_id": official["id"],
         "meta": {"rules": DEFAULT_RULES},
-        "match_key": match_key,  # <-- NYTT
+        # "match_key": match_key,  # <-- NYTT
     }
     try:
         await matches_collection.insert_one(match_doc)
