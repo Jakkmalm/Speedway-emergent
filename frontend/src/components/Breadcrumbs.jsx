@@ -88,7 +88,7 @@ export default function Breadcrumbs({ hideIfNoMatch = true }) {
     if (hideIfNoMatch && items.length === 0) return null;
 
     return (
-        <Breadcrumb>
+        <Breadcrumb className="p-4">
             <BreadcrumbList>
                 {items.map((it, i) => {
                     const isLast = i === items.length - 1;

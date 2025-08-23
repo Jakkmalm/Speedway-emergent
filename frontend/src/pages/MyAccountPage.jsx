@@ -37,7 +37,7 @@ export default function MyAccountPage() {
   const { theme, setTheme } = useTheme();
 
   return (
-    <div className="max-w-5xl mx-auto p-6 grid gap-6 md:grid-cols-2">
+    <div className="max-w-5xl mx-auto grid gap-6 md:grid-cols-2">
       {/* Tema / utseende */}
       <Card className="rounded-2xl bg-card border shadow-sm">
         <CardHeader>

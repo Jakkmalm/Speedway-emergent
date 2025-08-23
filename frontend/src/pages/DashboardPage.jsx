@@ -27,7 +27,7 @@ function DashboardCard({ to, title, description, icon }) {
 
 export default function DashboardPage() {
   return (
-    <div className="max-w-6xl mx-auto p-6 grid gap-6 md:grid-cols-3">
+    <div className="max-w-6xl mx-auto grid gap-6 md:grid-cols-3">
       <DashboardCard
         to="/matches"
         title="Starta match"

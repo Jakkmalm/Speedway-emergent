@@ -152,7 +152,7 @@ export default function MyMatchesPage() {
   const handleDelete = async (id) => {
     await toast.promise(deleteMatch(id), {
       loading: "Tar bort…",
-      success: "Match borttagen",
+      success: "Protokoll borttaget",
       error: "Kunde inte ta bort matchen",
     });
     setMatches((prev) => prev.filter((m) => m.id !== id));
@@ -241,8 +241,8 @@ export default function MyMatchesPage() {
                     userMatch={um}
                     onResolve={resolve}
                     loadingResolve={!!resolving[um.id || um._id]}
-                  // Om du har borttagning av sparade matcher:
-                  // onDelete={(userMatchId, matchId) => handleDeleteSaved(userMatchId, matchId)}
+                    // Om du har borttagning av sparade matcher:
+                    onDelete={(userMatchId, matchId) => handleDeleteSaved(userMatchId, matchId)}
                   />
                 ))}
               </div>
