@@ -1,5 +1,5 @@
 // src/lib/withMinDelay.js
-export const withMinDelay = (promise, ms = 350) =>
+export const withMinDelay = (promise, ms) =>
   Promise.all([promise, new Promise((r) => setTimeout(r, ms))]).then(
     ([data]) => data
   );

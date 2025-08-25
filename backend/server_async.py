@@ -31,7 +31,12 @@ import bcrypt
 from helpers.schedule_elit import ELITSERIEN_2_15_7, COLOR_TO_TEAM, COLOR_TO_HELMET
 from services.meta_rules import DEFAULT_RULES
 from config import FRONTEND_ORIGINS, MONGO_URL
-from pymongo.errors import DuplicateKeyError  # lägg till högst upp bland imports
+from pymongo.errors import DuplicateKeyError, OperationFailure # lägg till högst upp bland imports
+import unicodedata  # NEW
+ 
+
+
+
 import logging, sys, asyncio
 # ...
 logger = logging.getLogger("uvicorn.error")  # använder Uvicorns logger
@@ -338,6 +343,16 @@ def to_str_id(x):
         return [to_str_id(i) for i in x]
     else:
         return x
+    
+    
+# NYTT FÖR USERNAME NORMALISERING / CASEINSENSITIV
+    
+def normalize_username(name: str) -> str:  # NEW
+    """
+    Normalisera användarnamn för case-insensitiv jämförelse.
+    NFKC + casefold hanterar Unicode bättre än bara lower().
+    """
+    return unicodedata.normalize("NFKC", name).strip().casefold()
         
 
 
@@ -810,6 +825,26 @@ async def startup_event() -> None:
     official_results_collection = db["official_results"]
     official_heats_collection = db["official_heats"]
     
+    
+    
+     # --- BACKFILL username_cf + index (körs vid uppstart) ---  # NEW
+    # Fyll username_cf där det saknas (Mongo saknar "casefold", så vi använder $toLower här).
+    # Detta täcker 99% av fallen; nyinläggningar använder Python casefold() i register/login.
+    await users_collection.update_many(
+        {"username_cf": {"$exists": False}},
+        [ {"$set": {"username_cf": {"$toLower": "$username"}}} ]
+    )
+    # Försök skapa unikt index (race-safe). Misslyckas om det redan finns dubletter.
+    try:
+        await users_collection.create_index(
+            "username_cf",
+            unique=True,
+            name="uniq_username_cf"
+        )
+    except OperationFailure as e:
+        # Logga och låt servern starta; åtgärda dubletter separat.
+        print(f"[WARN] unique index on username_cf not created: {e}")
+    
     # Unikt index för att hindra dubletter per användare och match_key
 # (partial -> påverkar endast dokument som har "match_key")
     await matches_collection.create_index(
@@ -850,8 +885,14 @@ async def register(user_data: UserRegister) -> Dict[str, Any]:
     # Ensure DB and collections are initialised
     if users_collection is None:
         raise HTTPException(status_code=503, detail="Database not initialised yet")
-    existing = await users_collection.find_one({"$or": [{"username": user_data.username}, {"email": user_data.email}]}, 
-                                               session=None)
+    # existing = await users_collection.find_one({"$or": [{"username": user_data.username}, {"email": user_data.email}]}, 
+    #                                            session=None)
+    norm = normalize_username(user_data.username)  # NEW
+    existing = await users_collection.find_one(
+        {"$or": [{"username_cf": norm}, {"email": user_data.email}]},
+        session=None
+    )
+    
     if existing:
         raise HTTPException(status_code=400, detail="Användare finns redan")
     user_id = str(uuid.uuid4())
@@ -859,6 +900,7 @@ async def register(user_data: UserRegister) -> Dict[str, Any]:
     user_doc = {
         "id": user_id,
         "username": user_data.username,
+        "username_cf": norm,  # NEW
         "email": user_data.email,
         "password": hashed_password,
         "created_at": datetime.utcnow(),
@@ -874,7 +916,9 @@ async def login(user_data: UserLogin) -> Dict[str, Any]:
     Log in a user with username and password. Returns a JWT on success.
     Raises HTTP 401 if credentials are invalid.
     """
-    user = await users_collection.find_one({"username": user_data.username})
+    # user = await users_collection.find_one({"username": user_data.username})
+    norm = normalize_username(user_data.username)  # NEW
+    user = await users_collection.find_one({"username_cf": norm})    
     if not user or not verify_password(user_data.password, user["password"]):
         raise HTTPException(status_code=401, detail="Felaktiga inloggningsuppgifter")
     token = create_jwt_token(user["id"])

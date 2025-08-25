@@ -42,7 +42,7 @@ export default function MyMatchesPage() {
 
   const loadUserMatches = async () => {
     try {
-      const data = await withMinDelay(getUserMatches(), 350);
+      const data = await withMinDelay(getUserMatches(), 0);  // nollställt delay
       setUserMatches(data);
     } catch (e) {
       console.error("Error loading user matches:", e);
@@ -51,7 +51,7 @@ export default function MyMatchesPage() {
 
   const loadMatches = async () => {
     try {
-      const m = await withMinDelay(getMatches(), 350);
+      const m = await withMinDelay(getMatches(), 0);
       setMatches(m);
     } catch (e) {
       console.error("Error loading matches:", e);
