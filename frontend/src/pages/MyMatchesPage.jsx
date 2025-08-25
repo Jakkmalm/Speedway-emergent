@@ -1,24 +1,26 @@
 // src/pages/MyMatchesPage.jsx
-import React, { useEffect, useState, useMemo } from "react";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "../components/ui/card";
-import { Calendar } from "lucide-react";
-import { Button } from "../components/ui/button";
-import { Badge } from "../components/ui/badge";
-import { Users, AlertTriangle } from "lucide-react";
-import { getUserMatches, resolveUserMatch, deleteMatch, getMatches } from "../api/matches";
-import { useAuth } from "../contexts/AuthContext";
-import MatchList from "../components/MatchList";
+import React, { useMemo, useState } from "react";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import { Calendar, Users } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { useAuth } from "@/contexts/AuthContext";
+import MatchList from "@/components/MatchList";
 import UserMatchCard from "@/components/UserMatchCard";
 import { toast } from "sonner";
-import { deleteUserMatchCascade } from "@/api/matches";
-// import { UserMatchCardSkeleton } from "@/components/skeletons/UserMatchCardSkeleton";
-// import { MatchListSkeleton } from "@/components/skeletons/MatchListSkeleton";
-// import { MatchRowSkeleton } from "@/components/skeletons/MatchRowSkeleton";
 import { LoadingBlock } from "@/components/LoadingState";
-import { withMinDelay } from "@/lib/withMinDelay";
 import { asArray } from "@/lib/asArray";
 import { usePagination } from "@/hooks/usePagination";
 import { PaginationBar } from "@/components/PaginationBar";
+
+// ✅ TanStack hooks
+import {
+  useMatches,
+  useUserMatches,
+  useResolveUserMatch,
+  useDeleteMatch,
+  useDeleteUserMatchCascade,
+} from "@/queries/matches";
 
 function formatDate(dateString) {
   return new Date(dateString).toLocaleDateString("sv-SE", {
@@ -31,41 +33,27 @@ function formatDate(dateString) {
 }
 
 export default function MyMatchesPage() {
-  const [userMatches, setUserMatches] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [loadingResolve, setLoadingResolve] = useState(false);
-  const [resolving, setResolving] = useState({}); // { [userMatchId]: true/false }
-
   const { user } = useAuth();
-  const [matches, setMatches] = useState(null);
-  const [deleting, setDeleting] = useState({}); // valfritt per-kort-lås
 
-  const loadUserMatches = async () => {
-    try {
-      const data = await withMinDelay(getUserMatches(), 0);  // nollställt delay
-      setUserMatches(data);
-    } catch (e) {
-      console.error("Error loading user matches:", e);
-    }
-  };
+  // Läs listorna via Query – cache för back-navigering; uppdatera via invalidation
+  const {
+    data: matches = [],
+    isLoading: loadingMatches,
+    error: matchesError,
+  } = useMatches({ staleTime: Infinity });
 
-  const loadMatches = async () => {
-    try {
-      const m = await withMinDelay(getMatches(), 0);
-      setMatches(m);
-    } catch (e) {
-      console.error("Error loading matches:", e);
-    }
-  };
+  const {
+    data: userMatches = [],
+    isLoading: loadingUserMatches,
+    error: userMatchesError,
+  } = useUserMatches({ staleTime: Infinity });
 
-  // const openMatches = useMemo(() => {
-  //   return matches.filter(
-  //     (m) => m.created_by === user?.id && (m.status || "").toLowerCase() !== "confirmed"
-  //   );
-  // }, [matches, user?.id]);
+  // Mutationer
+  const resolveMutation = useResolveUserMatch();
+  const deleteMatchMutation = useDeleteMatch();
+  const deleteUserMatchCascadeMutation = useDeleteUserMatchCascade();
 
-
-  // NULL-kontroll och filtrering av matcher
+  // Filtrera “öppna” protokoll du skapat
   const openMatches = useMemo(
     () =>
       asArray(matches).filter(
@@ -76,8 +64,7 @@ export default function MyMatchesPage() {
     [matches, user?.id]
   );
 
-
-  // Sidindelning för protokoll – 5 per sida
+  // Sidindelning
   const {
     page: openPage,
     setPage: setOpenPage,
@@ -85,7 +72,6 @@ export default function MyMatchesPage() {
     pageItems: openPageItems,
   } = usePagination(openMatches, 5);
 
-  // Sidindelning för "Mina matcher" – 5 per sida
   const userMatchesArr = asArray(userMatches);
   const {
     page: umPage,
@@ -94,93 +80,52 @@ export default function MyMatchesPage() {
     pageItems: umPageItems,
   } = usePagination(userMatchesArr, 5);
 
+  // UI-state för knapplås
+  const [resolving, setResolving] = useState({});
+  const [deleting, setDeleting] = useState({});
 
+  // Handlers
 
-  useEffect(() => {
-    loadUserMatches();
-    loadMatches();
-  }, []);
-
-  // const resolve = async (userMatchId, action) => {
-  //   setLoadingResolve(true);
-  //   try {
-  //     await resolveUserMatch(userMatchId, action);
-  //     await loadUserMatches();
-  //     alert("Konflikt löst!");
-  //   } catch (e) {
-  //     alert("Kunde inte lösa konflikt: " + e.message);
-  //   } finally {
-  //     setLoadingResolve(false);
-  //   }
-  // };
   const resolve = async (userMatchId, action) => {
-    // setLoadingResolve(true);
-    // try {
-    //   await toast.promise(resolveUserMatch(userMatchId, action), {
-    //     loading: "Uppdaterar…",
-    //     success: "Konflikt uppdaterad",
-    //     error: (e) => e?.message || "Kunde inte lösa konflikten",
-    //   });
-    //   await loadUserMatches();
-    // } finally {
-    //   setLoadingResolve(false);
-    // }
-    setResolving(p => ({ ...p, [userMatchId]: true }));
+    setResolving((p) => ({ ...p, [userMatchId]: true }));
     try {
-      await toast.promise(resolveUserMatch(userMatchId, action), {
+      await toast.promise(resolveMutation.mutateAsync({ userMatchId, action }), {
         loading: "Uppdaterar…",
         success: "Konflikt uppdaterad",
         error: (e) => e?.message || "Kunde inte lösa konflikten",
       });
-      await loadUserMatches();
+      // Hooken invaliderar userMatches → hämtar om vid behov (annars cache)
     } finally {
-      setResolving(p => ({ ...p, [userMatchId]: false }));
+      setResolving((p) => ({ ...p, [userMatchId]: false }));
     }
   };
 
-  // const handleDelete = async (id) => {
-  //   if (!window.confirm("Ta bort matchen?")) return;
-  //   try {
-  //     await deleteMatch(id);
-  //     setMatches((prev) => prev.filter((m) => m.id !== id));
-  //   } catch (e) {
-  //     alert("Kunde inte ta bort match: " + e.message);
-  //   }
-  // };
-
-  // Hantera borttagning av "protokoll""
   const handleDelete = async (id) => {
-    await toast.promise(deleteMatch(id), {
+    await toast.promise(deleteMatchMutation.mutateAsync(id), {
       loading: "Tar bort…",
       success: "Protokoll borttaget",
       error: "Kunde inte ta bort matchen",
     });
-    setMatches((prev) => prev.filter((m) => m.id !== id));
+    // Hooken invaliderar matches (+ ev. userMatches om du vill utöka det i hooken)
   };
 
-
-  // Hantera borttagning av sparade matcher
-  const handleDeleteSaved = async (userMatchId, matchId) => {
-    setDeleting(p => ({ ...p, [userMatchId]: true }));
+  const handleDeleteSaved = async (userMatchId /*, matchId */) => {
+    setDeleting((p) => ({ ...p, [userMatchId]: true }));
     try {
-      await toast.promise(deleteUserMatchCascade(userMatchId), {
+      await toast.promise(deleteUserMatchCascadeMutation.mutateAsync(userMatchId), {
         loading: "Tar bort…",
         success: "Match borttagen",
         error: (e) => e?.message || "Kunde inte ta bort matchen",
       });
-
-      // Plocka bort korten lokalt
-      setUserMatches(prev => prev.filter(um => (um.id || um._id) !== userMatchId));
-      setMatches(prev => prev.filter(m => m.id !== matchId)); // ifall du visar protokoll-listan på samma sida
+      // Hooken invaliderar både userMatches och matches
     } finally {
-      setDeleting(p => ({ ...p, [userMatchId]: false }));
+      setDeleting((p) => ({ ...p, [userMatchId]: false }));
     }
   };
 
-
   return (
     <>
-      {/* Mina matcher */}
+      {/* Mina matcher (sparade protokoll) */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -189,45 +134,13 @@ export default function MyMatchesPage() {
           </CardTitle>
           <CardDescription>Matcher du har fyllt i protokoll för</CardDescription>
         </CardHeader>
-        {/* <CardContent>
-          <div className="space-y-4">
-            {userMatches === null ? (
-              <div className="space-y-4">
-                <LoadingBlock
-                  text="Hämtar sparade matcher"
-                />
-
-              </div>
-            ) : asArray(userMatches).length === 0 ? (
-              <p className="text-muted-foreground text-center py-8">
-                Du har inte fyllt i några matcher än
-              </p>
-            ) : (
-              <div className="space-y-4">
-                {asArray(userMatches).map((um) => (
-                  <>
-                    <UserMatchCard
-                      key={um.id || um._id}
-                      userMatch={um}
-                      onResolve={resolve}
-                      loadingResolve={!!resolving[um.id || um._id]}
-                    />
-                    <PaginationBar
-                      page={openPage}
-                      pageCount={openPageCount}
-                      onPageChange={setOpenPage}
-                    />
-                  </>
-                ))}
-              </div>
-            )}
-          </div>
-        </CardContent> */}
         <CardContent>
-          {userMatches === null ? (
+          {loadingUserMatches ? (
             <div className="space-y-4">
               <LoadingBlock text="Hämtar sparade matcher" />
             </div>
+          ) : userMatchesError ? (
+            <p className="text-red-600">Kunde inte ladda dina matcher</p>
           ) : userMatchesArr.length === 0 ? (
             <p className="text-muted-foreground text-center py-8">
               Du har inte fyllt i några matcher än
@@ -241,8 +154,7 @@ export default function MyMatchesPage() {
                     userMatch={um}
                     onResolve={resolve}
                     loadingResolve={!!resolving[um.id || um._id]}
-                    // Om du har borttagning av sparade matcher:
-                    onDelete={(userMatchId, matchId) => handleDeleteSaved(userMatchId, matchId)}
+                    onDelete={(userMatchId) => handleDeleteSaved(userMatchId)}
                   />
                 ))}
               </div>
@@ -256,37 +168,9 @@ export default function MyMatchesPage() {
           )}
         </CardContent>
       </Card>
-      {/* Skapade matcher */}
-      {/* <Card className="mt-6">
-        <CardHeader>
-          <CardTitle className="flex items-center">
-            <Calendar className="w-5 h-5 mr-2" />
-            Skapade matcher
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {matches === null ? (
-            <LoadingBlock
-              text="Hämtar protokoll" />
-          ) : (
 
-            <>
-              <MatchList
-                matches={asArray(openMatches)}
-                userId={user?.id}
-                onDelete={handleDelete}
-              />
-              <PaginationBar
-                page={openPage}
-                pageCount={openPageCount}
-                onPageChange={setOpenPage}
-              />
-            </>
-          )}
-        </CardContent>
-      </Card> */}
+      {/* Skapade matcher (öppna protokoll) */}
       <Card className="mt-6">
-        {/* ...header */}
         <CardHeader>
           <CardTitle className="flex items-center">
             <Calendar className="w-5 h-5 mr-2" />
@@ -294,8 +178,10 @@ export default function MyMatchesPage() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {matches === null ? (
+          {loadingMatches ? (
             <LoadingBlock text="Hämtar protokoll" />
+          ) : matchesError ? (
+            <p className="text-red-600">Kunde inte ladda skapade matcher</p>
           ) : (
             <>
               <MatchList
@@ -312,7 +198,7 @@ export default function MyMatchesPage() {
           )}
         </CardContent>
       </Card>
-
     </>
   );
 }
+
