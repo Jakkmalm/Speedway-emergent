@@ -21,7 +21,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from bson import ObjectId
-from fastapi import FastAPI, HTTPException, Depends, status, Body
+
+from fastapi import FastAPI, HTTPException, Depends, status, Body, APIRouter, Request
+from pydantic import BaseModel, Field
+
+
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -69,6 +73,9 @@ user_matches_collection = None
 official_matches_collection = None
 official_results_collection = None
 official_heats_collection = None
+user_settings_collection = None
+sessions_collection = None
+
 
 # FastAPI app setup
 app = FastAPI(title="Speedway Elitserien API (Async)")
@@ -824,6 +831,17 @@ async def startup_event() -> None:
     official_matches_collection = db["official_matches"]
     official_results_collection = db["official_results"]
     official_heats_collection = db["official_heats"]
+    user_settings_collection = db["user_settings"]
+    sessions_collection = db["sessions"]
+    
+    try:
+        await user_settings_collection.create_index("user_id", unique=True, name="uniq_user_settings")
+    except Exception as e:
+        print(f"[WARN] user_settings index: {e}")
+    try:
+        await sessions_collection.create_index([("user_id", 1), ("last_active", -1)], name="sessions_user_time")
+    except Exception as e:
+        print(f"[WARN] sessions index: {e}")
     
     
     
@@ -911,7 +929,7 @@ async def register(user_data: UserRegister) -> Dict[str, Any]:
 
 
 @app.post("/api/auth/login")
-async def login(user_data: UserLogin) -> Dict[str, Any]:
+async def login(user_data: UserLogin, request: Request) -> Dict[str, Any]:
     """
     Log in a user with username and password. Returns a JWT on success.
     Raises HTTP 401 if credentials are invalid.
@@ -922,6 +940,21 @@ async def login(user_data: UserLogin) -> Dict[str, Any]:
     if not user or not verify_password(user_data.password, user["password"]):
         raise HTTPException(status_code=401, detail="Felaktiga inloggningsuppgifter")
     token = create_jwt_token(user["id"])
+    try:
+        ua = request.headers.get("user-agent", "")
+        ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")
+        session_doc = {
+            "id": str(uuid.uuid4()),
+            "user_id": user["id"],
+            "ip": ip,
+            "user_agent": ua,
+            "browser": request.headers.get("sec-ch-ua"),
+            "os": request.headers.get("sec-ch-ua-platform"),
+            "last_active": datetime.utcnow(),
+        }
+        await sessions_collection.insert_one(session_doc)
+    except Exception as e:
+        print("[WARN] could not record session:", e)
     return {"token": token, "user": {"id": user["id"], "username": user["username"], "email": user["email"]}}
 
 
@@ -2318,3 +2351,229 @@ async def scrape_official_results(home_team: str, away_team: str, date: str) -> 
 async def health_check() -> Dict[str, str]:
     """Simple health check endpoint."""
     return {"status": "ok", "service": "Speedway Elitserien API (Async)"}
+
+
+# =======================
+#  ACCOUNT ROUTER
+# =======================
+account_router = APIRouter(prefix="/api/account", tags=["account"])
+
+class ProfileUpdate(BaseModel):
+    display_name: Optional[str] = None
+    username: Optional[str] = None
+    email: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+class NotificationsModel(BaseModel):
+    email: Dict[str, bool] = Field(default_factory=dict)
+    push: Dict[str, bool] = Field(default_factory=dict)
+    quietHours: Dict[str, str] = Field(default_factory=dict)  # {"start":"22:00","end":"07:00"}
+
+class TwoFAVerify(BaseModel):
+    code: str
+
+class SessionsDeleteBody(BaseModel):
+    scope: Optional[str] = None  # "others"
+
+class DeleteAccountBody(BaseModel):
+    password: Optional[str] = None
+
+def _public_user(doc: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": doc.get("id"),
+        "username": doc.get("username"),
+        "display_name": doc.get("display_name") or doc.get("username"),
+        "email": doc.get("email"),
+        "avatar_url": doc.get("avatar_url"),
+        "two_factor_enabled": bool(doc.get("two_factor_enabled")),
+        "stats": doc.get("stats") or {},
+    }
+
+@account_router.get("/me")
+async def account_me(user_id: str = Depends(verify_jwt_token)):
+    udoc = await users_collection.find_one({"id": user_id})
+    if not udoc:
+        raise HTTPException(status_code=404, detail="User not found")
+    # Snabb statistik
+    stats = {}
+    try:
+        stats["protocols"] = await matches_collection.count_documents({"created_by": user_id})
+        stats["saved"] = await user_matches_collection.count_documents({"user_id": user_id})
+    except Exception:
+        pass
+    udoc["stats"] = stats
+    return _public_user(udoc)
+
+@account_router.put("/profile")
+async def account_profile(body: ProfileUpdate, user_id: str = Depends(verify_jwt_token)):
+    update: Dict[str, Any] = {}
+    if body.display_name is not None:
+        update["display_name"] = body.display_name.strip()
+    if body.avatar_url is not None:
+        update["avatar_url"] = body.avatar_url.strip()
+    if body.email is not None:
+        exists = await users_collection.find_one({"email": body.email, "id": {"$ne": user_id}})
+        if exists:
+            raise HTTPException(status_code=400, detail="E-post används redan")
+        update["email"] = body.email.strip()
+    if body.username is not None:
+        new_un = body.username.strip()
+        norm = normalize_username(new_un)
+        exists = await users_collection.find_one({"username_cf": norm, "id": {"$ne": user_id}})
+        if exists:
+            raise HTTPException(status_code=400, detail="Användarnamnet upptaget")
+        update["username"] = new_un
+        update["username_cf"] = norm
+    if not update:
+        return {"ok": True}
+    await users_collection.update_one({"id": user_id}, {"$set": update})
+    return {"ok": True}
+
+@account_router.put("/password")
+async def account_password(body: PasswordChange, user_id: str = Depends(verify_jwt_token)):
+    udoc = await users_collection.find_one({"id": user_id})
+    if not udoc or not verify_password(body.current_password, udoc["password"]):
+        raise HTTPException(status_code=400, detail="Fel nuvarande lösenord")
+    hashed = hash_password(body.new_password)
+    await users_collection.update_one({"id": user_id}, {"$set": {"password": hashed}})
+    return {"ok": True}
+
+@account_router.get("/notifications")
+async def account_notifications(user_id: str = Depends(verify_jwt_token)):
+    doc = await user_settings_collection.find_one({"user_id": user_id})
+    if not doc:
+        return {
+            "email": {"match_created": True, "protocol_saved": True, "conflict_detected": True},
+            "push":  {"match_created": True, "protocol_saved": True, "conflict_detected": True},
+            "quietHours": {"start": "22:00", "end": "07:00"},
+        }
+    return {
+        "email": doc.get("email", {}),
+        "push": doc.get("push", {}),
+        "quietHours": doc.get("quietHours", {}),
+    }
+
+@account_router.put("/notifications")
+async def account_notifications_update(body: NotificationsModel, user_id: str = Depends(verify_jwt_token)):
+    await user_settings_collection.update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "user_id": user_id,
+            "email": body.email,
+            "push": body.push,
+            "quietHours": body.quietHours,
+            "updated_at": datetime.utcnow(),
+        }},
+        upsert=True,
+    )
+    return {"ok": True}
+
+@account_router.get("/sessions")
+async def account_sessions(user_id: str = Depends(verify_jwt_token)):
+    cur = sessions_collection.find({"user_id": user_id}).sort("last_active", -1)
+    out = []
+    async for s in cur:
+        out.append({
+            "id": s.get("id"),
+            "ip": s.get("ip"),
+            "browser": s.get("browser"),
+            "os": s.get("os"),
+            "user_agent": s.get("user_agent"),
+            "last_active": s.get("last_active"),
+            "current": False,  # kan markeras via jti om du börjar spara det i JWT
+        })
+    return out
+
+@account_router.delete("/sessions/{session_id}")
+async def account_sessions_delete(session_id: str, user_id: str = Depends(verify_jwt_token)):
+    res = await sessions_collection.delete_one({"id": session_id, "user_id": user_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Session ej hittad")
+    return {"ok": True}
+
+@account_router.delete("/sessions")
+async def account_sessions_delete_many(body: SessionsDeleteBody, user_id: str = Depends(verify_jwt_token)):
+    if body.scope == "others":
+        await sessions_collection.delete_many({"user_id": user_id})
+        return {"ok": True}
+    raise HTTPException(status_code=400, detail="Ogiltigt scope")
+
+@account_router.post("/2fa/enable")
+async def account_2fa_enable(user_id: str = Depends(verify_jwt_token)):
+    if not pyotp:
+        # fallback om pyotp ej installerat – låter dig spara en hemlighet ändå
+        secret = uuid.uuid4().hex[:16].upper()
+        await users_collection.update_one({"id": user_id}, {"$set": {"totp_secret_pending": secret}})
+        return {"secret": secret}
+    secret = pyotp.random_base32()
+    await users_collection.update_one({"id": user_id}, {"$set": {"totp_secret_pending": secret}})
+    issuer = "Speedway"
+    u = await users_collection.find_one({"id": user_id})
+    label = (u.get("email") if u else None) or (u.get("username") if u else None) or user_id
+    otpauth_url = pyotp.totp.TOTP(secret).provisioning_uri(name=label, issuer_name=issuer)
+    payload = {"secret": secret, "otpauth_url": otpauth_url}
+    try:
+        import qrcode, io, base64
+        img = qrcode.make(otpauth_url)
+        buf = io.BytesIO(); img.save(buf, format="PNG")
+        payload["qrcodeDataUrl"] = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        pass
+    return payload
+
+@account_router.post("/2fa/verify")
+async def account_2fa_verify(body: TwoFAVerify, user_id: str = Depends(verify_jwt_token)):
+    doc = await users_collection.find_one({"id": user_id}, {"totp_secret_pending": 1})
+    secret = (doc or {}).get("totp_secret_pending")
+    if not secret:
+        raise HTTPException(status_code=400, detail="Ingen 2FA-setup pågående")
+    if not pyotp:
+        raise HTTPException(status_code=400, detail="2FA kräver pyotp på servern")
+    totp = pyotp.TOTP(secret)
+    if not totp.verify(body.code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Fel kod")
+    await users_collection.update_one(
+        {"id": user_id},
+        {"$set": {"two_factor_enabled": True, "totp_secret": secret}, "$unset": {"totp_secret_pending": ""}}
+    )
+    return {"ok": True}
+
+@account_router.post("/2fa/disable")
+async def account_2fa_disable(user_id: str = Depends(verify_jwt_token)):
+    await users_collection.update_one(
+        {"id": user_id},
+        {"$set": {"two_factor_enabled": False}, "$unset": {"totp_secret": "", "totp_secret_pending": ""}}
+    )
+    return {"ok": True}
+
+@account_router.get("/export")
+async def account_export(user_id: str = Depends(verify_jwt_token)):
+    u = await users_collection.find_one({"id": user_id}, {"_id": 0, "password": 0, "totp_secret": 0, "totp_secret_pending": 0})
+    pkg = {"user": u, "exported_at": datetime.utcnow().isoformat()}
+    try:
+        cur = matches_collection.find({"created_by": user_id}, {"_id": 0})
+        pkg["matches"] = [m async for m in cur]
+    except Exception:
+        pkg["matches"] = []
+    return pkg
+
+@account_router.delete("/")
+async def account_delete(body: DeleteAccountBody, user_id: str = Depends(verify_jwt_token)):
+    if body.password:
+        doc = await users_collection.find_one({"id": user_id})
+        if not doc or not verify_password(body.password, doc["password"]):
+            raise HTTPException(status_code=400, detail="Fel lösenord")
+    await users_collection.delete_one({"id": user_id})
+    await user_settings_collection.delete_one({"user_id": user_id})
+    await sessions_collection.delete_many({"user_id": user_id})
+    await user_matches_collection.delete_many({"user_id": user_id})
+    # matches skapade av user kan behållas (historik); ändra om du vill kaskadradera
+    return {"ok": True}
+
+app.include_router(account_router)
+
+

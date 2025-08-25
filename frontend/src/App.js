@@ -14,6 +14,7 @@ import AuthPage from "./pages/AuthPage";
 import DashboardPage from "./pages/DashboardPage";
 import RequireAuth from "./components/RequireAuth";
 import MyAccountPage from "./pages/MyAccountPage";
+import AccountPage from "@/pages/account/AccountPage";
 import { AuthProvider } from "./contexts/AuthContext";
 
 import { Toaster } from "@/components/ui/sonner";
@@ -38,7 +39,8 @@ export default function App() {
               >
                 <Route path="/" element={<HomePage />} />
                 <Route path="/dashboard" element={<DashboardPage />} />
-                <Route path="/account" element={<MyAccountPage />} />
+                {/* <Route path="/account" element={<MyAccountPage />} /> */}
+                <Route path="/account" element={<AccountPage />} />
                 <Route path="/matches" element={<MatchesPage />} />
                 <Route path="/match/:id" element={<MatchProtocolPage />} />
                 <Route path="/my-matches" element={<MyMatchesPage />} />
