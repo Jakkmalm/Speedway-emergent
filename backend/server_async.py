@@ -813,6 +813,7 @@ async def startup_event() -> None:
     global users_collection, teams_collection, matches_collection
     global riders_collection, user_matches_collection
     global official_matches_collection, official_results_collection, official_heats_collection
+    global user_settings_collection, sessions_collection
 
     mongo_url = os.getenv("MONGO_URL")  # Example: mongodb+srv://user:pw@cluster.mongodb.net/
 
