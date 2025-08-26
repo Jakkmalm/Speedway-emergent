@@ -36,7 +36,9 @@ from helpers.schedule_elit import ELITSERIEN_2_15_7, COLOR_TO_TEAM, COLOR_TO_HEL
 from services.meta_rules import DEFAULT_RULES
 from config import FRONTEND_ORIGINS, MONGO_URL
 from pymongo.errors import DuplicateKeyError, OperationFailure # lägg till högst upp bland imports
+
 import unicodedata  # NEW
+import hashlib, json, re  # NEW
  
 
 
@@ -839,10 +841,41 @@ async def startup_event() -> None:
         await user_settings_collection.create_index("user_id", unique=True, name="uniq_user_settings")
     except Exception as e:
         print(f"[WARN] user_settings index: {e}")
+    # try:
+    #     await sessions_collection.create_index([("user_id", 1), ("last_active", -1)], name="sessions_user_time")
+    # except Exception as e:
+    #     print(f"[WARN] sessions index: {e}")
+    
+    #TESTAR NYTT FÖR UPD SESSION HANTERING 
+    # Sessions-index: unikt per (user_id,fingerprint) så samma enhet inte dupliceras
     try:
-        await sessions_collection.create_index([("user_id", 1), ("last_active", -1)], name="sessions_user_time")
+        # Rensa ev. dubbletter innan vi sätter unique-index
+        docs = await sessions_collection.find(
+            {}, projection={"_id": 1, "user_id": 1, "fingerprint": 1, "last_active": 1}
+        ).sort([("user_id", 1), ("fingerprint", 1), ("last_active", -1)]).to_list(length=None)
+        seen = set()
+        for s in docs:
+            key = (s.get("user_id"), s.get("fingerprint"))
+            if key in seen:
+                await sessions_collection.delete_one({"_id": s["_id"]})
+            else:
+                seen.add(key)
+        await sessions_collection.create_index(
+            [("user_id", 1), ("fingerprint", 1)],
+            unique=True,
+            name="uniq_session_fp",
+        )
+        # (valfritt) TTL 30 dagar på last_active för att städa bort inaktiva sessioner
+        try:
+            await sessions_collection.create_index(
+                "last_active",
+                expireAfterSeconds=60 * 60 * 24 * 30,
+                name="ttl_last_active_30d",
+            )
+        except Exception as e:
+            print(f"[WARN] sessions TTL index: {e}")
     except Exception as e:
-        print(f"[WARN] sessions index: {e}")
+        print(f"[WARN] sessions unique index: {e}")
     
     
     
@@ -891,6 +924,62 @@ async def api_resolve_team(payload: ResolveTeamIn) -> Dict[str, Any]:
     return {"team_id": team["id"], "team_name": team["name"], "city": team.get("city","")}
 
 
+
+###########################
+# Sessions: helpers
+###########################
+def _parse_brands(sec_ch_ua: str) -> list[str]:
+    if not sec_ch_ua:
+        return []
+    brands = []
+    for tok in sec_ch_ua.split(","):
+        tok = tok.strip()
+        m = re.match(r'"([^"]+)"\s*;\s*v="([^"]+)"', tok)
+        if m:
+            brands.append(m.group(1))
+    return brands
+
+def _device_label_and_fp(request: Request) -> tuple[str, str]:
+    """
+    Returnerar (device_label, fingerprint_hex).
+    fingerprint = sha256 över ett par stabila headers.
+    """
+    ua  = request.headers.get("user-agent", "")
+    ch  = request.headers.get("sec-ch-ua", "")
+    plt = request.headers.get("sec-ch-ua-platform", "")
+    mob = request.headers.get("sec-ch-ua-mobile", "")
+
+    # Trevligare "device label"
+    brands = _parse_brands(ch)
+    brand = None
+    for b in brands:
+        bl = b.lower()
+        if any(x in bl for x in ("chrome", "chromium", "edge", "opera", "safari", "firefox")):
+            brand = b
+            break
+    if not brand:
+        if "Firefox" in ua:
+            brand = "Firefox"
+        elif "Edg/" in ua:
+            brand = "Microsoft Edge"
+        elif "OPR/" in ua:
+            brand = "Opera"
+        elif "Chrome/" in ua:
+            brand = "Chrome"
+        elif "Safari/" in ua:
+            brand = "Safari"
+        else:
+            brand = "Webbläsare"
+    platform = (plt or "Okänt OS").strip('"')
+    device_label = f"{brand} på {platform}"
+
+    # Fingerprint – UNDVIKER IP så att IP-byten inte skapar nya enheter
+    payload = {"ua": ua, "ch": ch, "plt": plt, "mob": mob}
+    fp = hashlib.sha256(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return device_label, fp
+
+
+
 ###########################
 # Authentication endpoints
 ###########################
@@ -928,7 +1017,6 @@ async def register(user_data: UserRegister) -> Dict[str, Any]:
     token = create_jwt_token(user_id)
     return {"token": token, "user": {"id": user_id, "username": user_data.username, "email": user_data.email}}
 
-
 @app.post("/api/auth/login")
 async def login(user_data: UserLogin, request: Request) -> Dict[str, Any]:
     """
@@ -941,21 +1029,62 @@ async def login(user_data: UserLogin, request: Request) -> Dict[str, Any]:
     if not user or not verify_password(user_data.password, user["password"]):
         raise HTTPException(status_code=401, detail="Felaktiga inloggningsuppgifter")
     token = create_jwt_token(user["id"])
+    # try:
+    #     ua = request.headers.get("user-agent", "")
+    #     ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")
+    #     session_doc = {
+    #         "id": str(uuid.uuid4()),
+    #         "user_id": user["id"],
+    #         "ip": ip,
+    #         "user_agent": ua,
+    #         "browser": request.headers.get("sec-ch-ua"),
+    #         "os": request.headers.get("sec-ch-ua-platform"),
+    #         "last_active": datetime.utcnow(),
+    #     }
+    #     await sessions_collection.insert_one(session_doc)
+    # except Exception as e:
+    #     print("[WARN] could not record session:", e)
+    
+    
+    # NYTT FÖR SESSION HANTERING MED DEVICE LABEL OCH FINGERPRINT
+    # Registrera/uppdatera session (unik per fingerprint) + max 3 enheter
     try:
-        ua = request.headers.get("user-agent", "")
+        device_label, fp = _device_label_and_fp(request)
         ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")
-        session_doc = {
-            "id": str(uuid.uuid4()),
-            "user_id": user["id"],
-            "ip": ip,
-            "user_agent": ua,
-            "browser": request.headers.get("sec-ch-ua"),
-            "os": request.headers.get("sec-ch-ua-platform"),
-            "last_active": datetime.utcnow(),
-        }
-        await sessions_collection.insert_one(session_doc)
+        now = datetime.utcnow()
+
+        existing = await sessions_collection.find_one({"user_id": user["id"], "fingerprint": fp})
+        if existing:
+            await sessions_collection.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {
+                    "last_active": now,
+                    "ip": ip,
+                    "device_label": device_label,
+                }}
+            )
+        else:
+            # räkna aktiva enheter
+            active_count = await sessions_collection.count_documents({"user_id": user["id"]})
+            if active_count >= 3:
+                raise HTTPException(status_code=403, detail="Max antal enheter uppnått (3). Logga ut på en annan enhet först.")
+            await sessions_collection.insert_one({
+                "id": str(uuid.uuid4()),
+                "user_id": user["id"],
+                "fingerprint": fp,
+                "device_label": device_label,
+                "ip": ip,
+                "user_agent": request.headers.get("user-agent", ""),
+                "browser": request.headers.get("sec-ch-ua"),
+                "os": request.headers.get("sec-ch-ua-platform"),
+                "last_active": now,
+            })
+    except HTTPException:
+        raise
     except Exception as e:
         print("[WARN] could not record session:", e)
+        
+        
     return {"token": token, "user": {"id": user["id"], "username": user["username"], "email": user["email"]}}
 
 
@@ -2474,7 +2603,12 @@ async def account_notifications_update(body: NotificationsModel, user_id: str = 
     return {"ok": True}
 
 @account_router.get("/sessions")
-async def account_sessions(user_id: str = Depends(verify_jwt_token)):
+async def account_sessions(request: Request, user_id: str = Depends(verify_jwt_token)):
+    # Beräkna fingerprint för DEN HÄR klienten så vi kan markera "current"
+    try:
+        _, current_fp = _device_label_and_fp(request)
+    except Exception:
+        current_fp = None
     cur = sessions_collection.find({"user_id": user_id}).sort("last_active", -1)
     out = []
     async for s in cur:
@@ -2486,8 +2620,13 @@ async def account_sessions(user_id: str = Depends(verify_jwt_token)):
             "user_agent": s.get("user_agent"),
             "last_active": s.get("last_active"),
             "current": False,  # kan markeras via jti om du börjar spara det i JWT
+            "device_label": s.get("device_label") or "Okänd enhet",
+            "current": (current_fp is not None and s.get("fingerprint") == current_fp),
         })
     return out
+
+
+
 
 @account_router.delete("/sessions/{session_id}")
 async def account_sessions_delete(session_id: str, user_id: str = Depends(verify_jwt_token)):
@@ -2497,9 +2636,17 @@ async def account_sessions_delete(session_id: str, user_id: str = Depends(verify
     return {"ok": True}
 
 @account_router.delete("/sessions")
-async def account_sessions_delete_many(body: SessionsDeleteBody, user_id: str = Depends(verify_jwt_token)):
+async def account_sessions_delete_many(body: SessionsDeleteBody, request: Request, user_id: str = Depends(verify_jwt_token)):
     if body.scope == "others":
-        await sessions_collection.delete_many({"user_id": user_id})
+        # ta bort alla UTOM nuvarande fingerprint
+        try:
+            _, fp = _device_label_and_fp(request)
+        except Exception:
+            fp = None
+        q = {"user_id": user_id}
+        if fp:
+            q["fingerprint"] = {"$ne": fp}
+        await sessions_collection.delete_many(q)
         return {"ok": True}
     raise HTTPException(status_code=400, detail="Ogiltigt scope")
 
