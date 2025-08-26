@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+
 from motor.motor_asyncio import AsyncIOMotorClient
 import jwt
 import bcrypt
@@ -41,12 +41,17 @@ from pymongo.errors import DuplicateKeyError, OperationFailure # lägg till hög
 import unicodedata  # NEW
 import hashlib, json, re  # NEW
  
-
+try:
+    import pyotp   # valfritt för TOTP 2FA
+except Exception:
+    pyotp = None
 
 
 import logging, sys, asyncio
 # ...
 logger = logging.getLogger("uvicorn.error")  # använder Uvicorns logger
+
+
 
 
 # Environment variables and constants
@@ -82,9 +87,6 @@ sessions_collection = None
 
 # FastAPI app setup
 app = FastAPI(title="Speedway Elitserien API (Async)")
-
-client = None
-db = None
 
 
 # Allow CORS from all origins (adjust in production)
@@ -161,7 +163,27 @@ async def verify_jwt_token(
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
     
-    
+
+def create_2fa_ticket(user_id: str, fp: str, ip: str, device_label: str) -> str:
+    payload = {
+        "typ": "2fa",
+        "user_id": user_id,
+        "fp": fp,
+        "ip": ip,
+        "device_label": device_label,
+        "iat": int(datetime.utcnow().timestamp()),
+        "exp": datetime.utcnow() + timedelta(minutes=5),  # 5 min giltig
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def decode_2fa_ticket(token: str) -> Dict[str, Any]:
+    data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    if data.get("typ") != "2fa":
+        raise HTTPException(status_code=400, detail="Ogiltig biljett")
+    return data
+
+
+
     
 def build_match_key(home_team_id: str, away_team_id: str, dt: datetime) -> str:
     """
@@ -721,6 +743,7 @@ async def generate_default_heats(home_team_id: str, away_team_id: str) -> List[D
 
 
 
+
 async def generate_match_heats(home_team_id: str, away_team_id: str, rules: Dict[str, Any]) -> List[Dict[str, Any]]:
     home = await get_team_roster(home_team_id)
     away = await get_team_roster(away_team_id)
@@ -730,18 +753,18 @@ async def generate_match_heats(home_team_id: str, away_team_id: str, rules: Dict
 
     heats: List[Dict[str, Any]] = []
 
-    for heat_no, g1, g2, g3, g4 in ELITSERIEN_2_15_7:
-        
-        
-        #TEST 
-        def parse(cell: str, gate: str) -> Dict[str, Any]:
-        # "R5" => en specifik ordinarie/reserv enligt lineup_no
-            if "/" not in cell:
-                color = cell[0]
-                num = int(cell[1:])
-                team_key = COLOR_TO_TEAM[color]  # "home" för R/B, "away" för G/V
-                rider = _pick_rider_by_lineup(home if team_key == "home" else away, num)
-                return {
+    def parse(cell: str, gate: str) -> Dict[str, Any]:
+        """
+        cell:
+          - t.ex. "R5" / "B3" / "G6" / "V7"  -> ordinarie/reserv enligt lineup_no
+          - t.ex. "V/R" eller "B/G"         -> nominering i heat 14–15 (väljs senare)
+        """
+        if "/" not in cell:
+            color = cell[0]  # R/B/G/V
+            num = int(cell[1:])
+            team_key = COLOR_TO_TEAM[color]  # "home" för R/B, "away" för G/V
+            rider = _pick_rider_by_lineup(home if team_key == "home" else away, num)
+            return {
                 "rider_id": str(rider["id"]),
                 "name": rider["name"],
                 "team": team_key,
@@ -749,30 +772,28 @@ async def generate_match_heats(home_team_id: str, away_team_id: str, rules: Dict
                 "lineup_no": num,
                 "is_reserve": bool(rider.get("is_reserve", num in (6, 7))),
                 "locked": bool(num in (6, 7)),  # reservernas schemalagda heat är låsta
-                }   
-
-        # Nominering (14–15): cell t.ex. "V/R" eller "B/G"
-        # Här sätter vi INTE team; det görs först när nomineringen skickas in.
+            }
+        else:
+            # Nominering (14–15): inga fasta förare ännu
             c1, c2 = cell.split("/")
             return {
                 "rider_id": None,
                 "name": None,
-                "team": None,                 # ← viktigt: inget lag bestämt här
-                "helmet_color": None,         # sätts vid nominering
+                "team": None,                 # bestäms vid nominering
+                "helmet_color": None,         # bestäms vid nominering
                 "lineup_no": None,
                 "is_reserve": False,
                 "locked": False,
-                # spara färgbokstäverna så vi kan mappa till team/färg sen
                 "color_choices": [c1, c2],    # t.ex. ["V","R"] eller ["G","B"]
             }
 
+    for heat_no, g1, g2, g3, g4 in ELITSERIEN_2_15_7:
         riders = {
             "1": parse(g1, "1"),
             "2": parse(g2, "2"),
             "3": parse(g3, "3"),
             "4": parse(g4, "4"),
         }
-
         heats.append({
             "heat_number": heat_no,
             "riders": riders,
@@ -792,6 +813,11 @@ async def generate_match_heats(home_team_id: str, away_team_id: str, rules: Dict
 ###########################
 # Pydantic models
 ###########################
+
+class TwoFALoginVerify(BaseModel):
+    ticket: str
+    code: str
+
 
 class UserRegister(BaseModel):
     username: str
@@ -1056,27 +1082,165 @@ async def register(user_data: UserRegister, request: Request) -> Dict[str, Any]:
 
 
 
+# @app.post("/api/auth/login")
+# async def login(user_data: UserLogin, request: Request) -> Dict[str, Any]:
+#     """
+#     Log in a user with username and password. Returns a JWT on success.
+#     Raises HTTP 401 if credentials are invalid.
+#     """
+#     # user = await users_collection.find_one({"username": user_data.username})
+#     norm = normalize_username(user_data.username)  # NEW
+#     user = await users_collection.find_one({"username_cf": norm})    
+#     if not user or not verify_password(user_data.password, user["password"]):
+#         raise HTTPException(status_code=401, detail="Felaktiga inloggningsuppgifter")
+#     # Registrera/återanvänd session + binda jti i token
+#     device_label, fp = _device_label_and_fp(request)
+#     ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")
+#     now = datetime.utcnow()
+#     existing = await sessions_collection.find_one({"user_id": user["id"], "fingerprint": fp})
+#     if existing:
+#         jti = existing["id"]
+#         await sessions_collection.update_one({"_id": existing["_id"]}, {"$set": {"last_active": now, "ip": ip, "device_label": device_label}})
+#     else:
+#         # max 3 nya enheter
+#         active_count = await sessions_collection.count_documents({"user_id": user["id"]})
+#         if active_count >= 3:
+#             raise HTTPException(status_code=403, detail="Max antal enheter uppnått (3). Logga ut på en annan enhet först.")
+#         jti = str(uuid.uuid4())
+#         await sessions_collection.insert_one({
+#             "id": jti,
+#             "user_id": user["id"],
+#             "fingerprint": fp,
+#             "device_label": device_label,
+#             "ip": ip,
+#             "user_agent": request.headers.get("user-agent", ""),
+#             "browser": request.headers.get("sec-ch-ua"),
+#             "os": request.headers.get("sec-ch-ua-platform"),
+#             "last_active": now,
+#         })
+#     token = create_jwt_token(user["id"], jti)
+        
+#     # NYTT FÖR SESSION HANTERING MED DEVICE LABEL OCH FINGERPRINT
+#     # Registrera/uppdatera session (unik per fingerprint) + max 3 enheter
+#     try:
+#         device_label, fp = _device_label_and_fp(request)
+#         ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")
+#         now = datetime.utcnow()
+
+#         existing = await sessions_collection.find_one({"user_id": user["id"], "fingerprint": fp})
+#         if existing:
+#             await sessions_collection.update_one(
+#                 {"_id": existing["_id"]},
+#                 {"$set": {
+#                     "last_active": now,
+#                     "ip": ip,
+#                     "device_label": device_label,
+#                 }}
+#             )
+#         else:
+#             # räkna aktiva enheter
+#             active_count = await sessions_collection.count_documents({"user_id": user["id"]})
+#             if active_count >= 3:
+#                 raise HTTPException(status_code=403, detail="Max antal enheter uppnått (3). Logga ut på en annan enhet först.")
+#             await sessions_collection.insert_one({
+#                 "id": str(uuid.uuid4()),
+#                 "user_id": user["id"],
+#                 "fingerprint": fp,
+#                 "device_label": device_label,
+#                 "ip": ip,
+#                 "user_agent": request.headers.get("user-agent", ""),
+#                 "browser": request.headers.get("sec-ch-ua"),
+#                 "os": request.headers.get("sec-ch-ua-platform"),
+#                 "last_active": now,
+#             })
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print("[WARN] could not record session:", e)
+        
+        
+#     return {"token": token, "user": {"id": user["id"], "username": user["username"], "email": user["email"]}}
+
+
+# @app.post("/api/auth/login")
+# async def login(user_data: UserLogin, request: Request) -> Dict[str, Any]:
+#     norm = normalize_username(user_data.username)
+#     user = await users_collection.find_one({"username_cf": norm})
+#     if not user or not verify_password(user_data.password, user["password"]):
+#         raise HTTPException(status_code=401, detail="Felaktiga inloggningsuppgifter")
+
+#     device_label, fp = _device_label_and_fp(request)
+#     ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")
+#     now = datetime.utcnow()
+
+#     existing = await sessions_collection.find_one({"user_id": user["id"], "fingerprint": fp})
+#     if existing:
+#         jti = existing["id"]
+#         await sessions_collection.update_one(
+#             {"_id": existing["_id"]},
+#             {"$set": {"last_active": now, "ip": ip, "device_label": device_label}}
+#         )
+#     else:
+#         active_count = await sessions_collection.count_documents({"user_id": user["id"]})
+#         if active_count >= 3:
+#             raise HTTPException(status_code=403, detail="Max antal enheter uppnått (3). Logga ut på en annan enhet först.")
+#         jti = str(uuid.uuid4())
+#         await sessions_collection.insert_one({
+#             "id": jti,
+#             "user_id": user["id"],
+#             "fingerprint": fp,
+#             "device_label": device_label,
+#             "ip": ip,
+#             "user_agent": request.headers.get("user-agent", ""),
+#             "browser": request.headers.get("sec-ch-ua"),
+#             "os": request.headers.get("sec-ch-ua-platform"),
+#             "last_active": now,
+#         })
+
+#     token = create_jwt_token(user["id"], jti)
+#     return {"token": token, "user": {"id": user["id"], "username": user["username"], "email": user["email"]}}
+
 @app.post("/api/auth/login")
 async def login(user_data: UserLogin, request: Request) -> Dict[str, Any]:
     """
-    Log in a user with username and password. Returns a JWT on success.
-    Raises HTTP 401 if credentials are invalid.
+    Steg 1 av inloggning.
+    - Om 2FA INTE är aktivt ELLER om det redan finns en session för den här enheten:
+        -> skapa/uppdatera session och returnera JWT direkt.
+    - Om 2FA är aktivt OCH ingen session finns för den här enheten:
+        -> returnera two_factor_required + kortlivad 2FA-biljett (skapa INTE session ännu).
     """
-    # user = await users_collection.find_one({"username": user_data.username})
-    norm = normalize_username(user_data.username)  # NEW
-    user = await users_collection.find_one({"username_cf": norm})    
+    norm = normalize_username(user_data.username)
+    user = await users_collection.find_one({"username_cf": norm})
     if not user or not verify_password(user_data.password, user["password"]):
         raise HTTPException(status_code=401, detail="Felaktiga inloggningsuppgifter")
-    # Registrera/återanvänd session + binda jti i token
+
     device_label, fp = _device_label_and_fp(request)
     ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")
     now = datetime.utcnow()
+
+    # Finns redan en session på den här enheten?
     existing = await sessions_collection.find_one({"user_id": user["id"], "fingerprint": fp})
+
+    twofa_on = bool(user.get("two_factor_enabled")) and bool(user.get("totp_secret"))
+    if twofa_on and not existing:
+        # 2FA krävs ENDAST när det inte finns en befintlig session för denna enhet
+        ticket = create_2fa_ticket(user["id"], fp, ip, device_label)
+        return {
+            "two_factor_required": True,
+            "ticket": ticket,
+            "device_label": device_label,
+            "user": {"id": user["id"], "username": user["username"], "email": user["email"]},
+        }
+
+    # Ingen 2FA eller det finns redan session för den här enheten -> skapa/återanvänd session + token direkt
     if existing:
         jti = existing["id"]
-        await sessions_collection.update_one({"_id": existing["_id"]}, {"$set": {"last_active": now, "ip": ip, "device_label": device_label}})
+        await sessions_collection.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"last_active": now, "ip": ip, "device_label": device_label}}
+        )
     else:
-        # max 3 nya enheter
+        # Max 3 enheter per användare
         active_count = await sessions_collection.count_documents({"user_id": user["id"]})
         if active_count >= 3:
             raise HTTPException(status_code=403, detail="Max antal enheter uppnått (3). Logga ut på en annan enhet först.")
@@ -1092,67 +1256,61 @@ async def login(user_data: UserLogin, request: Request) -> Dict[str, Any]:
             "os": request.headers.get("sec-ch-ua-platform"),
             "last_active": now,
         })
-    token = create_jwt_token(user["id"], jti)
-    
-    
-    
-    # try:
-    #     ua = request.headers.get("user-agent", "")
-    #     ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")
-    #     session_doc = {
-    #         "id": str(uuid.uuid4()),
-    #         "user_id": user["id"],
-    #         "ip": ip,
-    #         "user_agent": ua,
-    #         "browser": request.headers.get("sec-ch-ua"),
-    #         "os": request.headers.get("sec-ch-ua-platform"),
-    #         "last_active": datetime.utcnow(),
-    #     }
-    #     await sessions_collection.insert_one(session_doc)
-    # except Exception as e:
-    #     print("[WARN] could not record session:", e)
-    
-    
-    # NYTT FÖR SESSION HANTERING MED DEVICE LABEL OCH FINGERPRINT
-    # Registrera/uppdatera session (unik per fingerprint) + max 3 enheter
-    try:
-        device_label, fp = _device_label_and_fp(request)
-        ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")
-        now = datetime.utcnow()
 
-        existing = await sessions_collection.find_one({"user_id": user["id"], "fingerprint": fp})
-        if existing:
-            await sessions_collection.update_one(
-                {"_id": existing["_id"]},
-                {"$set": {
-                    "last_active": now,
-                    "ip": ip,
-                    "device_label": device_label,
-                }}
-            )
-        else:
-            # räkna aktiva enheter
-            active_count = await sessions_collection.count_documents({"user_id": user["id"]})
-            if active_count >= 3:
-                raise HTTPException(status_code=403, detail="Max antal enheter uppnått (3). Logga ut på en annan enhet först.")
-            await sessions_collection.insert_one({
-                "id": str(uuid.uuid4()),
-                "user_id": user["id"],
-                "fingerprint": fp,
-                "device_label": device_label,
-                "ip": ip,
-                "user_agent": request.headers.get("user-agent", ""),
-                "browser": request.headers.get("sec-ch-ua"),
-                "os": request.headers.get("sec-ch-ua-platform"),
-                "last_active": now,
-            })
-    except HTTPException:
-        raise
-    except Exception as e:
-        print("[WARN] could not record session:", e)
-        
-        
+    token = create_jwt_token(user["id"], jti)
     return {"token": token, "user": {"id": user["id"], "username": user["username"], "email": user["email"]}}
+
+
+
+
+@app.post("/api/auth/2fa/verify")
+async def verify_2fa_login(body: TwoFALoginVerify, request: Request) -> Dict[str, Any]:
+    if not pyotp:
+        raise HTTPException(status_code=500, detail="2FA kräver pyotp på servern")
+
+    data = decode_2fa_ticket(body.ticket)
+    user_id = data["user_id"]
+    fp = data["fp"]
+    device_label = data["device_label"]
+    ip = data["ip"]
+
+    user = await users_collection.find_one({"id": user_id})
+    if not user or not user.get("two_factor_enabled") or not user.get("totp_secret"):
+        raise HTTPException(status_code=400, detail="2FA ej aktiverad för användaren")
+
+    totp = pyotp.TOTP(user["totp_secret"])
+    if not totp.verify(body.code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Fel kod")
+
+    # Skapa/återanvänd session (samma logik som i login)
+    now = datetime.utcnow()
+    existing = await sessions_collection.find_one({"user_id": user_id, "fingerprint": fp})
+    if existing:
+        jti = existing["id"]
+        await sessions_collection.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"last_active": now, "ip": ip, "device_label": device_label}}
+        )
+    else:
+        active_count = await sessions_collection.count_documents({"user_id": user_id})
+        if active_count >= 3:
+            raise HTTPException(status_code=403, detail="Max antal enheter uppnått (3). Logga ut på en annan enhet först.")
+        jti = str(uuid.uuid4())
+        await sessions_collection.insert_one({
+            "id": jti,
+            "user_id": user_id,
+            "fingerprint": fp,
+            "device_label": device_label,
+            "ip": ip,
+            "user_agent": request.headers.get("user-agent", ""),
+            "browser": request.headers.get("sec-ch-ua"),
+            "os": request.headers.get("sec-ch-ua-platform"),
+            "last_active": now,
+        })
+
+    token = create_jwt_token(user_id, jti)
+    return {"token": token, "user": {"id": user["id"], "username": user["username"], "email": user["email"]}}
+
 
 
 ###########################
@@ -2671,14 +2829,16 @@ async def account_notifications_update(body: NotificationsModel, user_id: str = 
 
 @account_router.get("/sessions")
 async def account_sessions(request: Request, user_id: str = Depends(verify_jwt_token)):
-    # Beräkna fingerprint för DEN HÄR klienten så vi kan markera "current"
+    # Markera aktuell session via fingerprint (eller via request.state.jti om du vill)
     try:
         _, current_fp = _device_label_and_fp(request)
     except Exception:
         current_fp = None
+
     cur = sessions_collection.find({"user_id": user_id}).sort("last_active", -1)
     out = []
     async for s in cur:
+        label = s.get("device_label") or "Okänd enhet"
         out.append({
             "id": s.get("id"),
             "ip": s.get("ip"),
@@ -2686,8 +2846,8 @@ async def account_sessions(request: Request, user_id: str = Depends(verify_jwt_t
             "os": s.get("os"),
             "user_agent": s.get("user_agent"),
             "last_active": s.get("last_active"),
-            "current": False,  # kan markeras via jti om du börjar spara det i JWT
-            "device_label": s.get("device_label") or "Okänd enhet",
+            "device_label": label,
+            "device": label,  # <- för frontend som använder s.device
             "current": (current_fp is not None and s.get("fingerprint") == current_fp),
         })
     return out
