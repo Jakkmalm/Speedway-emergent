@@ -23,6 +23,7 @@ from typing import List, Optional, Dict, Any
 from bson import ObjectId
 
 from fastapi import FastAPI, HTTPException, Depends, status, Body, APIRouter, Request
+
 from pydantic import BaseModel, Field
 
 
@@ -113,16 +114,21 @@ def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
 
 
-def create_jwt_token(user_id: str) -> str:
-    """Create a JWT for the given user identifier."""
+def create_jwt_token(user_id: str, jti: str) -> str:
+    """Create a JWT bound to a session-id (jti)."""
     payload = {
         "user_id": user_id,
+        "jti": jti,
+        "iat": int(datetime.utcnow().timestamp()),
         "exp": datetime.utcnow() + timedelta(days=7),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
-def verify_jwt_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
+async def verify_jwt_token(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    request: Request = None,
+) -> str:
     """
     Verify a JWT token from the Authorization header and return the user_id.
 
@@ -131,8 +137,24 @@ def verify_jwt_token(credentials: HTTPAuthorizationCredentials = Depends(securit
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user_id = payload.get("user_id")
+        jti = payload.get("jti")
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid token")
+        # Kräver giltig sessions-rad med samma jti
+        sess = await sessions_collection.find_one({"user_id": user_id, "id": jti}) if jti else None
+        if not sess:
+            raise HTTPException(status_code=401, detail="Sessionen är utloggad eller ogiltig")
+        # (valfritt) matcha fingerprint för att förhindra token-reuse från annan enhet
+        try:
+            _, fp = _device_label_and_fp(request) if request else (None, None)
+            if fp and sess.get("fingerprint") and sess["fingerprint"] != fp:
+                raise HTTPException(status_code=401, detail="Token passar inte denna enhet")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+        # bump last_active
+        await sessions_collection.update_one({"_id": sess["_id"]}, {"$set": {"last_active": datetime.utcnow()}})
         return user_id
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
@@ -936,44 +958,34 @@ def _parse_brands(sec_ch_ua: str) -> list[str]:
         tok = tok.strip()
         m = re.match(r'"([^"]+)"\s*;\s*v="([^"]+)"', tok)
         if m:
-            brands.append(m.group(1))
+            name = m.group(1)
+            if "not" in name.lower():  # filtrera "Not A Brand", "Not;A=Brand" etc
+                continue
+            brands.append(name)
     return brands
 
 def _device_label_and_fp(request: Request) -> tuple[str, str]:
-    """
-    Returnerar (device_label, fingerprint_hex).
-    fingerprint = sha256 över ett par stabila headers.
-    """
     ua  = request.headers.get("user-agent", "")
     ch  = request.headers.get("sec-ch-ua", "")
     plt = request.headers.get("sec-ch-ua-platform", "")
     mob = request.headers.get("sec-ch-ua-mobile", "")
-
-    # Trevligare "device label"
     brands = _parse_brands(ch)
     brand = None
-    for b in brands:
-        bl = b.lower()
-        if any(x in bl for x in ("chrome", "chromium", "edge", "opera", "safari", "firefox")):
-            brand = b
+    for candidate in brands:
+        low = candidate.lower()
+        if any(x in low for x in ("chrome", "chromium", "edge", "opera", "safari", "firefox", "duckduckgo")):
+            brand = candidate
             break
     if not brand:
-        if "Firefox" in ua:
-            brand = "Firefox"
-        elif "Edg/" in ua:
-            brand = "Microsoft Edge"
-        elif "OPR/" in ua:
-            brand = "Opera"
-        elif "Chrome/" in ua:
-            brand = "Chrome"
-        elif "Safari/" in ua:
-            brand = "Safari"
-        else:
-            brand = "Webbläsare"
+        if "Firefox" in ua: brand = "Firefox"
+        elif "Edg/" in ua:  brand = "Microsoft Edge"
+        elif "OPR/" in ua:  brand = "Opera"
+        elif "Chrome/" in ua: brand = "Chrome"
+        elif "Safari/" in ua: brand = "Safari"
+        else: brand = "Webbläsare"
     platform = (plt or "Okänt OS").strip('"')
     device_label = f"{brand} på {platform}"
-
-    # Fingerprint – UNDVIKER IP så att IP-byten inte skapar nya enheter
+    # fingerprint utan IP
     payload = {"ua": ua, "ch": ch, "plt": plt, "mob": mob}
     fp = hashlib.sha256(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
     return device_label, fp
@@ -985,7 +997,7 @@ def _device_label_and_fp(request: Request) -> tuple[str, str]:
 ###########################
 
 @app.post("/api/auth/register")
-async def register(user_data: UserRegister) -> Dict[str, Any]:
+async def register(user_data: UserRegister, request: Request) -> Dict[str, Any]:
     """
     Register a new user. Returns a JWT and user data on success.
     Raises HTTP 400 if the username or email already exists.
@@ -1014,8 +1026,35 @@ async def register(user_data: UserRegister) -> Dict[str, Any]:
         "created_at": datetime.utcnow(),
     }
     await users_collection.insert_one(user_doc, session=None)
-    token = create_jwt_token(user_id)
+    # Skapa/återanvänd session för den här enheten och bind token till dess id
+    device_label, fp = _device_label_and_fp(request)
+    now = datetime.utcnow()
+    existing = await sessions_collection.find_one({"user_id": user_id, "fingerprint": fp})
+    if existing:
+        jti = existing["id"]
+        await sessions_collection.update_one({"_id": existing["_id"]}, {"$set": {"last_active": now, "device_label": device_label}})
+    else:
+        # max 3 enheter
+        active_count = await sessions_collection.count_documents({"user_id": user_id})
+        if active_count >= 3:
+            raise HTTPException(status_code=403, detail="Max antal enheter uppnått (3). Logga ut på en annan enhet först.")
+        jti = str(uuid.uuid4())
+        await sessions_collection.insert_one({
+            "id": jti,
+            "user_id": user_id,
+            "fingerprint": fp,
+            "device_label": device_label,
+            "ip": request.headers.get("x-forwarded-for") or (request.client.host if request.client else ""),
+            "user_agent": request.headers.get("user-agent", ""),
+            "browser": request.headers.get("sec-ch-ua"),
+            "os": request.headers.get("sec-ch-ua-platform"),
+            "last_active": now,
+        })
+    token = create_jwt_token(user_id, jti)
     return {"token": token, "user": {"id": user_id, "username": user_data.username, "email": user_data.email}}
+
+
+
 
 @app.post("/api/auth/login")
 async def login(user_data: UserLogin, request: Request) -> Dict[str, Any]:
@@ -1028,7 +1067,35 @@ async def login(user_data: UserLogin, request: Request) -> Dict[str, Any]:
     user = await users_collection.find_one({"username_cf": norm})    
     if not user or not verify_password(user_data.password, user["password"]):
         raise HTTPException(status_code=401, detail="Felaktiga inloggningsuppgifter")
-    token = create_jwt_token(user["id"])
+    # Registrera/återanvänd session + binda jti i token
+    device_label, fp = _device_label_and_fp(request)
+    ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")
+    now = datetime.utcnow()
+    existing = await sessions_collection.find_one({"user_id": user["id"], "fingerprint": fp})
+    if existing:
+        jti = existing["id"]
+        await sessions_collection.update_one({"_id": existing["_id"]}, {"$set": {"last_active": now, "ip": ip, "device_label": device_label}})
+    else:
+        # max 3 nya enheter
+        active_count = await sessions_collection.count_documents({"user_id": user["id"]})
+        if active_count >= 3:
+            raise HTTPException(status_code=403, detail="Max antal enheter uppnått (3). Logga ut på en annan enhet först.")
+        jti = str(uuid.uuid4())
+        await sessions_collection.insert_one({
+            "id": jti,
+            "user_id": user["id"],
+            "fingerprint": fp,
+            "device_label": device_label,
+            "ip": ip,
+            "user_agent": request.headers.get("user-agent", ""),
+            "browser": request.headers.get("sec-ch-ua"),
+            "os": request.headers.get("sec-ch-ua-platform"),
+            "last_active": now,
+        })
+    token = create_jwt_token(user["id"], jti)
+    
+    
+    
     # try:
     #     ua = request.headers.get("user-agent", "")
     #     ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")
@@ -2629,11 +2696,14 @@ async def account_sessions(request: Request, user_id: str = Depends(verify_jwt_t
 
 
 @account_router.delete("/sessions/{session_id}")
-async def account_sessions_delete(session_id: str, user_id: str = Depends(verify_jwt_token)):
+async def account_sessions_delete(session_id: str, request: Request, user_id: str = Depends(verify_jwt_token)):
+    # Är det här min nuvarande session?
+    _, fp = _device_label_and_fp(request)
+    current = await sessions_collection.find_one({"user_id": user_id, "fingerprint": fp})
     res = await sessions_collection.delete_one({"id": session_id, "user_id": user_id})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Session ej hittad")
-    return {"ok": True}
+    return {"ok": True, "selfTerminated": bool(current and current.get("id") == session_id)}
 
 @account_router.delete("/sessions")
 async def account_sessions_delete_many(body: SessionsDeleteBody, request: Request, user_id: str = Depends(verify_jwt_token)):
