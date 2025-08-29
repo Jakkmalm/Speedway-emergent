@@ -188,8 +188,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs"
 export default function AuthPage() {
   const { user, login, verify2FA, register } = useAuth();
   const navigate = useNavigate();
-  const [sp] = useSearchParams();
-  const redirectTo = decodeURIComponent(sp.get("redirectTo") || "/");
+  // const [sp] = useSearchParams();
+  // const redirectTo = decodeURIComponent(sp.get("redirectTo") || "/");
 
   const [mode, setMode] = useState("login");
   const [loading, setLoading] = useState(false);
@@ -204,8 +204,10 @@ export default function AuthPage() {
   const [verifying, setVerifying] = useState(false);
 
   useEffect(() => {
-    if (user) navigate(redirectTo, { replace: true });
-  }, [user, redirectTo, navigate]);
+    // if (user) navigate(redirectTo, { replace: true });
+    if (user) navigate("/dashboard", { replace: true });
+  // }, [user, redirectTo, navigate]);
+  }, [user, navigate]);
 
   const doLogin = async (e) => {
     e.preventDefault();
@@ -224,7 +226,8 @@ export default function AuthPage() {
       }
 
       toast.success("Välkommen tillbaka!");
-      navigate(redirectTo, { replace: true });
+      // navigate(redirectTo, { replace: true });
+      navigate("/account", { replace: true });
     } catch (err) {
       toast.error("Inloggning misslyckades", {
         description: err?.message || "Något gick fel. Försök igen.",
@@ -242,7 +245,8 @@ export default function AuthPage() {
     try {
       await verify2FA(ticket, code);
       toast.success("Verifierad – inloggad");
-      navigate(redirectTo, { replace: true });
+      // navigate(redirectTo, { replace: true });
+      navigate("/dashbaord", { replace: true });
     } catch (err) {
       toast.error("Felaktig kod", { description: err?.message || "Prova igen." });
     } finally {
@@ -255,7 +259,8 @@ export default function AuthPage() {
     setLoading(true);
     try {
       await register(registerForm.username, registerForm.email, registerForm.password);
-      navigate(redirectTo, { replace: true });
+      // navigate(redirectTo, { replace: true });
+      navigate("/account", { replace: true });
       toast.success("Konto skapat!");
     } catch (err) {
       toast.error("Registrering misslyckades", {
