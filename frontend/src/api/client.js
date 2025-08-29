@@ -60,6 +60,23 @@ export async function apiCall(path, options = {}) {
     { ...options, headers }
   );
 
+  // Centralt 401/403-hantering → utlogga och skicka till /auth TESTAR
+  if (res.status === 401 || res.status === 403) {
+    try {
+      localStorage.removeItem("speedway_token");
+      localStorage.removeItem("speedway_user");
+    } catch {}
+    // undvik loop om man redan står på auth
+    if (window.location.pathname !== "/auth") {
+      window.location.replace("/auth");
+    }
+    // kasta ett fel ändå för anroparen
+    const text = await res.text().catch(() => "");
+    const err = new Error(`${res.status} ${res.statusText} – ${text || "Unauthorized"}`);
+    err.status = res.status;
+    throw err;
+  }
+
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     const err = new Error(`${res.status} ${res.statusText} – ${text || "Request failed"}`);

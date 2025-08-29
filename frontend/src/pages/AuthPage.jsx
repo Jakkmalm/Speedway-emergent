@@ -220,7 +220,7 @@ export default function AuthPage() {
         setTicket(res.ticket);
         setDeviceLabel(res.deviceLabel || "Ny enhet");
         toast.message("Tvåstegsverifiering", {
-          description: `Ange 6-siffrig kod för ${res.deviceLabel || "ny enhet"}.`,
+          description: `Ange 6-siffrig kod för ny enhet: ${res.deviceLabel || "ny enhet"}.`,
         });
         return;
       }
@@ -246,7 +246,7 @@ export default function AuthPage() {
       await verify2FA(ticket, code);
       toast.success("Verifierad – inloggad");
       // navigate(redirectTo, { replace: true });
-      navigate("/dashbaord", { replace: true });
+      navigate("/account", { replace: true });
     } catch (err) {
       toast.error("Felaktig kod", { description: err?.message || "Prova igen." });
     } finally {

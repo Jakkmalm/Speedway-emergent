@@ -172,6 +172,29 @@ export function AuthProvider({ children }) {
     setReady(true);
   }, []);
 
+  // Håll alla flikar i synk: om token/user tas bort i EN flik → logga ut i denna också  TESTAR
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key === "speedway_token" || e.key === "speedway_user") {
+        const token = localStorage.getItem("speedway_token");
+        const u = localStorage.getItem("speedway_user");
+        if (!token || !u) {
+          setUser(null);
+          // Om man står på skyddad sida så tar RequireAuth över och skickar till /auth
+        }
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+
+
+
+
+
+
+
   // STEG 1: login → kan returnera token ELLER 2FA-biljett
   const login = async (username, password) => {
     const res = await apiCall("/api/auth/login", {
