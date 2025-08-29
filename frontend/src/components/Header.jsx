@@ -186,10 +186,186 @@
 // }
 
 
-// src/components/Header.jsx
-import React, { useState } from "react";
-import { NavLink, useMatch, useNavigate } from "react-router-dom";
-import { Trophy } from "lucide-react";
+
+
+
+
+
+
+
+
+
+
+
+
+// // src/components/Header.jsx
+// import React, { useState } from "react";
+// import { NavLink, useMatch, useNavigate } from "react-router-dom";
+// import { Trophy } from "lucide-react";
+// import { Button } from "./ui/button";
+// import { useAuth } from "../contexts/AuthContext";
+
+// function cx(...xs) {
+//   return xs.filter(Boolean).join(" ");
+// }
+
+// export default function Header() {
+//   const { user, logout } = useAuth();
+//   const navigate = useNavigate();
+//   const [open, setOpen] = useState(false);
+
+//   // Kolla om vi är på /match/:id
+//   const matchRoute = useMatch("/match/:id");
+//   const activeMatchId = matchRoute?.params?.id || null;
+
+//   const nav = [
+//     { to: "/", label: "Tabell", show: true },
+//     // { to: "/matches", label: "Matcher", show: true },
+//     { to: "/dashboard", label: "Dashboard", show: true },
+//     // Visa Protokoll endast när vi faktiskt är på en match-route
+//     { to: activeMatchId ? `/match/${activeMatchId}` : "/matches", label: "Protokoll", show: !!activeMatchId },
+//     // { to: "/my-matches", label: "Mina matcher", show: !!user },
+//   ];
+
+//   const handleLogout = () => {
+//     logout();
+//     navigate("/auth", { replace: true });
+//   };
+
+//   return (
+//     <header className="bg-background shadow-lg border-b-2 border-red-600 sticky top-0 z-40">
+//       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+//         <div className="h-16 flex items-center justify-between">
+//           {/* Brand */}
+//           <NavLink to="/" className="flex items-center space-x-3">
+//             <div className="w-10 h-10 bg-destructive rounded-xl flex items-center justify-center">
+//               <Trophy className="h-6 w-6 text-white" />
+//             </div>
+//             <div className="hidden sm:block">
+//               <div className="text-lg font-bold text-primary">Speedway Elitserien</div>
+//               <div className="text-xs text-muted-foreground -mt-0.5">Professionellt Matchprotokoll</div>
+//             </div>
+//           </NavLink>
+
+//           {/* Desktop nav */}
+//           <nav className="hidden md:flex items-center gap-1">
+//             {nav.filter(n => n.show).map(n => (
+//               <NavLink
+//                 key={n.to + n.label}
+//                 to={n.to}
+//                 className={({ isActive }) =>
+//                   cx(
+//                     "px-3 py-2 rounded-md text-sm font-medium transition",
+//                     isActive ? "text-primary" : "text-muted-foreground hover:text-primary"
+//                   )
+//                 }
+//               >
+//                 {n.label}
+//               </NavLink>
+//             ))}
+//           </nav>
+
+//           {/* Auth (desktop) */}
+//           <div className="hidden md:flex items-center gap-3">
+//             {user ? (
+//               <>
+//                 <NavLink to="/account"
+//                   className={({ isActive }) =>
+//                     cx(
+//                       "text-sm text-muted-foreground",
+//                       isActive ? "text-primary" : "text-muted-foreground hover:text-primary"
+//                     )
+//                   }
+//                   onClick={() => setOpen(false)}
+//                 >
+//                   Hej, <b>{user.username}</b>
+//                 </NavLink>
+//                 <Button variant="outline" onClick={handleLogout}>
+//                   Logga ut
+//                 </Button>
+//               </>
+//             ) : (
+//               <NavLink to="/auth">
+//                 <Button className="bg-red-600 hover:bg-red-700">Logga in</Button>
+//               </NavLink>
+//             )}
+//           </div>
+
+//           {/* Mobile menu button */}
+//           <button
+//             className="md:hidden inline-flex items-center justify-center p-2 rounded-md"
+//             onClick={() => setOpen(o => !o)}
+//             aria-label="Open menu"
+//           >
+//             <svg className="h-6 w-6 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+//               {open ? (
+//                 <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+//               ) : (
+//                 <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+//               )}
+//             </svg>
+//           </button>
+//         </div>
+//       </div>
+
+//       {/* Mobile nav */}
+//       {open && (
+//         <div className="md:hidden border-t bg-card">
+//           <div className="px-4 py-3 space-y-2">
+//             {nav.filter(n => n.show).map(n => (
+//               <NavLink
+//                 key={n.to + n.label}
+//                 to={n.to}
+//                 onClick={() => setOpen(false)}
+//                 className={({ isActive }) =>
+//                   cx(
+//                     "block px-3 py-2 rounded-md text-sm font-medium transition",
+//                     isActive ? "text-primary" : "text-muted-foreground hover:text-primary"
+//                   )
+//                 }
+//               >
+//                 {n.label}
+//               </NavLink>
+//             ))}
+
+//             <div className="pt-2 border-t">
+//               {user ? (
+//                 <div className="flex items-center justify-between">
+//                   {/* <span className="text-sm text-gray-700">
+//                     Inloggad som <b>{user.username}</b>
+//                   </span> */}
+//                   <NavLink to="/account"
+//                     className={({ isActive }) =>
+//                       cx(
+//                         "text-sm text-muted-foreground",
+//                         isActive ? "text-primary" : "text-muted-foreground hover:text-primary"
+//                       )
+//                     }
+//                     onClick={() => setOpen(false)}>
+//                     Inloggad som <b>{user.username}</b>
+//                   </NavLink>
+
+//                   <Button variant="outline" size="sm" onClick={handleLogout}>
+//                     Logga ut
+//                   </Button>
+//                 </div>
+//               ) : (
+//                 <NavLink to="/auth" onClick={() => setOpen(false)}>
+//                   <Button className="w-full mt-2 bg-red-600 hover:bg-red-700">Logga in</Button>
+//                 </NavLink>
+//               )}
+//             </div>
+//           </div>
+//         </div>
+//       )}
+//     </header>
+//   );
+// }
+
+
+import React, { useState, useMemo } from "react";
+import { NavLink, useMatch, useNavigate, useLocation } from "react-router-dom";
+import { Trophy, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAuth } from "../contexts/AuthContext";
 
@@ -200,7 +376,11 @@ function cx(...xs) {
 export default function Header() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const [open, setOpen] = useState(false);
+
+  // expandera "Mina sidor" automatiskt om vi befinner oss under /account
+  const [accountOpen, setAccountOpen] = useState(() => pathname.startsWith("/account"));
 
   // Kolla om vi är på /match/:id
   const matchRoute = useMatch("/match/:id");
@@ -208,15 +388,26 @@ export default function Header() {
 
   const nav = [
     { to: "/", label: "Tabell", show: true },
-    // { to: "/matches", label: "Matcher", show: true },
     { to: "/dashboard", label: "Dashboard", show: true },
-    // Visa Protokoll endast när vi faktiskt är på en match-route
     { to: activeMatchId ? `/match/${activeMatchId}` : "/matches", label: "Protokoll", show: !!activeMatchId },
-    // { to: "/my-matches", label: "Mina matcher", show: !!user },
   ];
+
+  const accountLinks = useMemo(
+    () => [
+      { to: "/account", label: "Profil", exact: true },
+      { to: "/account/appearance", label: "Utseende" },
+      { to: "/account/notifications", label: "Notiser" },
+      { to: "/account/security", label: "Säkerhet" },
+      { to: "/account/privacy", label: "Data & sekretess" },
+    ],
+    []
+  );
+
+  const isAccountSectionActive = pathname.startsWith("/account");
 
   const handleLogout = () => {
     logout();
+    setOpen(false);            // stäng mobilmenyn vid logout
     navigate("/auth", { replace: true });
   };
 
@@ -231,13 +422,15 @@ export default function Header() {
             </div>
             <div className="hidden sm:block">
               <div className="text-lg font-bold text-primary">Speedway Elitserien</div>
-              <div className="text-xs text-muted-foreground -mt-0.5">Professionellt Matchprotokoll</div>
+              <div className="text-xs text-muted-foreground -mt-0.5">
+                Professionellt Matchprotokoll
+              </div>
             </div>
           </NavLink>
 
           {/* Desktop nav */}
           <nav className="hidden md:flex items-center gap-1">
-            {nav.filter(n => n.show).map(n => (
+            {nav.filter((n) => n.show).map((n) => (
               <NavLink
                 key={n.to + n.label}
                 to={n.to}
@@ -257,14 +450,14 @@ export default function Header() {
           <div className="hidden md:flex items-center gap-3">
             {user ? (
               <>
-                <NavLink to="/account"
+                <NavLink
+                  to="/account"
                   className={({ isActive }) =>
                     cx(
                       "text-sm text-muted-foreground",
                       isActive ? "text-primary" : "text-muted-foreground hover:text-primary"
                     )
                   }
-                  onClick={() => setOpen(false)}
                 >
                   Hej, <b>{user.username}</b>
                 </NavLink>
@@ -282,7 +475,7 @@ export default function Header() {
           {/* Mobile menu button */}
           <button
             className="md:hidden inline-flex items-center justify-center p-2 rounded-md"
-            onClick={() => setOpen(o => !o)}
+            onClick={() => setOpen((o) => !o)}
             aria-label="Open menu"
           >
             <svg className="h-6 w-6 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor">
@@ -300,7 +493,8 @@ export default function Header() {
       {open && (
         <div className="md:hidden border-t bg-card">
           <div className="px-4 py-3 space-y-2">
-            {nav.filter(n => n.show).map(n => (
+            {/* Primära länkar */}
+            {nav.filter((n) => n.show).map((n) => (
               <NavLink
                 key={n.to + n.label}
                 to={n.to}
@@ -316,20 +510,63 @@ export default function Header() {
               </NavLink>
             ))}
 
+            {/* "Mina sidor" grupp för inloggad användare */}
+            {user && (
+              <div className="pt-2 border-t">
+                <button
+                  type="button"
+                  onClick={() => setAccountOpen((s) => !s)}
+                  className={cx(
+                    "w-full flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium",
+                    isAccountSectionActive ? "text-primary" : "text-muted-foreground hover:text-primary"
+                  )}
+                >
+                  <span>Mina sidor</span>
+                  {accountOpen ? (
+                    <ChevronDown className="w-4 h-4" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4" />
+                  )}
+                </button>
+
+                {accountOpen && (
+                  <div className="mt-1 space-y-1">
+                    {accountLinks.map((l) => (
+                      <NavLink
+                        key={l.to}
+                        to={l.to}
+                        onClick={() => setOpen(false)}
+                        className={({ isActive }) =>
+                          cx(
+                            "block rounded-md text-sm font-medium transition",
+                            "pl-6 pr-3 py-2", // indentering
+                            isActive ? "text-primary" : "text-muted-foreground hover:text-primary"
+                          )
+                        }
+                        end={l.exact}
+                      >
+                        {l.label}
+                      </NavLink>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Auth-controls i mobilmeny */}
             <div className="pt-2 border-t">
               {user ? (
                 <div className="flex items-center justify-between">
-                  {/* <span className="text-sm text-gray-700">
-                    Inloggad som <b>{user.username}</b>
-                  </span> */}
-                  <NavLink to="/account"
+                  <NavLink
+                    to="/account"
                     className={({ isActive }) =>
                       cx(
                         "text-sm text-muted-foreground",
                         isActive ? "text-primary" : "text-muted-foreground hover:text-primary"
                       )
                     }
-                    onClick={() => setOpen(false)}>
+                    onClick={() => setOpen(false)}
+                  >
                     Inloggad som <b>{user.username}</b>
                   </NavLink>
 

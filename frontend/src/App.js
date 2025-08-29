@@ -14,8 +14,15 @@ import AuthPage from "./pages/AuthPage";
 import DashboardPage from "./pages/DashboardPage";
 import RequireAuth from "./components/RequireAuth";
 import MyAccountPage from "./pages/MyAccountPage";
-import AccountPage from "@/pages/account/AccountPage";
+
 import { AuthProvider } from "./contexts/AuthContext";
+
+import AccountPage from "@/pages/account/AccountPage";
+import ProfilePage from "@/pages/account/ProfilePage";
+import AppearancePage from "@/pages/account/AppearancePage";
+import NotificationsPage from "@/pages/account/NotificationsPage";
+import SecurityPage from "@/pages/account/SecurityPage";
+import PrivacyPage from "@/pages/account/PrivacyPage";
 
 import { Toaster } from "@/components/ui/sonner";
 
@@ -30,6 +37,21 @@ export default function App() {
               <Route path="/auth" element={<AuthPage />} />
 
               {/* Skyddade routes: kräver inloggning */}
+              {/* <Route
+                element={
+                  <RequireAuth>
+                    <RootLayout />
+                  </RequireAuth>
+                }
+              >
+                <Route path="/" element={<HomePage />} />
+                <Route path="/dashboard" element={<DashboardPage />} />
+                <Route path="/account" element={<AccountPage />} />
+                <Route path="/matches" element={<MatchesPage />} />
+                <Route path="/match/:id" element={<MatchProtocolPage />} />
+                <Route path="/my-matches" element={<MyMatchesPage />} />
+                <Route path="*" element={<NotFoundPage />} />
+              </Route> */}
               <Route
                 element={
                   <RequireAuth>
@@ -39,8 +61,16 @@ export default function App() {
               >
                 <Route path="/" element={<HomePage />} />
                 <Route path="/dashboard" element={<DashboardPage />} />
-                {/* <Route path="/account" element={<MyAccountPage />} /> */}
-                <Route path="/account" element={<AccountPage />} />
+
+                {/* /account som layout + undersidor */}
+                <Route path="/account" element={<AccountPage />}>
+                  <Route index element={<ProfilePage />} />
+                  <Route path="appearance" element={<AppearancePage />} />
+                  <Route path="notifications" element={<NotificationsPage />} />
+                  <Route path="security" element={<SecurityPage />} />
+                  <Route path="privacy" element={<PrivacyPage />} />
+                </Route>
+
                 <Route path="/matches" element={<MatchesPage />} />
                 <Route path="/match/:id" element={<MatchProtocolPage />} />
                 <Route path="/my-matches" element={<MyMatchesPage />} />

@@ -43,6 +43,18 @@ const ROUTE_CRUMBS = {
         label: "Notiser",
         parent: "/account",
     },
+    "/account/appearance": {
+        label: "Utseende",
+        parent: "/account",
+    },
+    "/account/security": {
+        label: "Säkerhet",
+        parent: "/account",
+    },
+    "/account/privacy": {
+        label: "Data & sekretess",
+        parent: "/account",
+    },
 };
 
 function resolveMatch(pathname) {
