@@ -217,7 +217,7 @@ export default function AccountPage() {
                                 {account?.stats?.last_active && (
                                     <Badge variant="secondary">
                                         Senast:{" "}
-                                        {new Date(account.stats.last_active).toLocaleDateString(
+                                        {new Date(account.stats.last_active).toLocaleString(
                                             "sv-SE"
                                         )}
                                     </Badge>
