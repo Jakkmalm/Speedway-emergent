@@ -8,7 +8,8 @@ export default function RequireAuth({ children }) {
 
   if (!user) {
     const redirectTo = encodeURIComponent(loc.pathname + loc.search);
-    return <Navigate to={`/auth?redirectTo=${redirectTo}`} replace />;
+    // return <Navigate to={`/auth?redirectTo=${redirectTo}`} replace />;
+    return <Navigate to="/auth" replace />
   }
 
   // När RootLayout skickas in som child:
