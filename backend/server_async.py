@@ -2748,20 +2748,65 @@ def _public_user(doc: Dict[str, Any]) -> Dict[str, Any]:
         "stats": doc.get("stats") or {},
     }
 
+# @account_router.get("/me")
+# async def account_me(user_id: str = Depends(verify_jwt_token)):
+#     udoc = await users_collection.find_one({"id": user_id})
+#     if not udoc:
+#         raise HTTPException(status_code=404, detail="User not found")
+#     # Snabb statistik
+#     stats = {}
+#     try:
+#         stats["protocols"] = await matches_collection.count_documents({"created_by": user_id})
+#         stats["saved"] = await user_matches_collection.count_documents({"user_id": user_id})
+#     except Exception:
+#         pass
+#     udoc["stats"] = stats
+#     return _public_user(udoc)
+
+
+# NY SOM SKICKAR LAST ACTIVE FRÅN SESSIONS
 @account_router.get("/me")
 async def account_me(user_id: str = Depends(verify_jwt_token)):
-    udoc = await users_collection.find_one({"id": user_id})
+    # (valfritt) exkludera känsliga fält
+    udoc = await users_collection.find_one(
+        {"id": user_id},
+        {"_id": 0, "password": 0, "two_factor_secret": 0}
+    )
     if not udoc:
         raise HTTPException(status_code=404, detail="User not found")
-    # Snabb statistik
-    stats = {}
+
+    stats: dict = {}
     try:
+        # dina befintliga counters
         stats["protocols"] = await matches_collection.count_documents({"created_by": user_id})
         stats["saved"] = await user_matches_collection.count_documents({"user_id": user_id})
+
+        # NYTT: senaste aktivitet från sessions
+        latest = await sessions_collection.find(
+            {"user_id": user_id},
+            {"last_active": 1}
+        ).sort("last_active", -1).limit(1).to_list(length=1)
+
+        last_active_iso = None
+        if latest and latest[0].get("last_active"):
+            la = latest[0]["last_active"]
+            if isinstance(la, datetime):
+                # anta UTC om naive
+                if la.tzinfo is None:
+                    la = la.replace(tzinfo=timezone.utc)
+                last_active_iso = la.isoformat()
+            else:
+                # om str/epoch → skicka som sträng
+                last_active_iso = str(la)
+
+        stats["last_active"] = last_active_iso
     except Exception:
+        # håll endpointen robust även om sessions-tabellen saknas
         pass
+
     udoc["stats"] = stats
     return _public_user(udoc)
+
 
 @account_router.put("/profile")
 async def account_profile(body: ProfileUpdate, user_id: str = Depends(verify_jwt_token)):
