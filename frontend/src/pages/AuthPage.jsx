@@ -288,6 +288,7 @@ export default function AuthPage() {
   //     setVerifying(false);
   //   }
   // };
+
   const doVerify2FA = async (e) => {
     e.preventDefault();
     if (!ticket || code.length !== 6) return;
