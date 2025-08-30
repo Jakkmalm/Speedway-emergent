@@ -167,7 +167,7 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     const u = localStorage.getItem("speedway_user");
     if (u) {
-      try { setUser(JSON.parse(u)); } catch {}
+      try { setUser(JSON.parse(u)); } catch { }
     }
     setReady(true);
   }, []);
@@ -188,21 +188,60 @@ export function AuthProvider({ children }) {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
+  // 🆕 Lyssna på global "auth:logout" → nolla user och töm cache
+  useEffect(() => {
+    const onForcedLogout = () => {
+      setUser(null);
+      try { queryClient.clear(); } catch { }
+    };
+    window.addEventListener("auth:logout", onForcedLogout);
+    return () => window.removeEventListener("auth:logout", onForcedLogout);
+  }, [queryClient]);
 
 
 
 
 
 
+  // // STEG 1: login → kan returnera token ELLER 2FA-biljett
+  // const login = async (username, password) => {
+  //   const res = await apiCall("/api/auth/login", {
+  //     method: "POST",
+  //     body: JSON.stringify({ username, password }),
+  //   });
 
-  // STEG 1: login → kan returnera token ELLER 2FA-biljett
+  //   // 2FA krävs: lagra inte token ännu – returnera data till UI:t
+  //   if (res?.two_factor_required) {
+  //     return {
+  //       twoFactorRequired: true,
+  //       ticket: res.ticket,
+  //       deviceLabel: res.device_label || "Ny enhet",
+  //       user: res.user,
+  //     };
+  //   }
+
+  //   // Ingen 2FA: spara token + user direkt
+  //   if (res?.token && res?.user) {
+  //     localStorage.setItem("speedway_token", res.token);
+  //     localStorage.setItem("speedway_user", JSON.stringify(res.user));
+  //     setUser(res.user);
+
+  //     // Rensa all cache när identitet ändras
+  //     queryClient.clear();
+  //     setAuthVersion(v => v + 1);
+
+  //     return { ok: true, user: res.user };
+  //   }
+
+  //   throw new Error("Oväntat svar från servern vid inloggning.");
+  // };
+
   const login = async (username, password) => {
     const res = await apiCall("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ username, password }),
     });
 
-    // 2FA krävs: lagra inte token ännu – returnera data till UI:t
     if (res?.two_factor_required) {
       return {
         twoFactorRequired: true,
@@ -212,16 +251,10 @@ export function AuthProvider({ children }) {
       };
     }
 
-    // Ingen 2FA: spara token + user direkt
     if (res?.token && res?.user) {
       localStorage.setItem("speedway_token", res.token);
       localStorage.setItem("speedway_user", JSON.stringify(res.user));
       setUser(res.user);
-
-      // Rensa all cache när identitet ändras
-      queryClient.clear();
-      setAuthVersion(v => v + 1);
-
       return { ok: true, user: res.user };
     }
 
@@ -229,51 +262,91 @@ export function AuthProvider({ children }) {
   };
 
   // STEG 2: verifiera 2FA-kod → då får vi token + user
+  // const verify2FA = async (ticket, code) => {
+  //   const res = await apiCall("/api/auth/2fa/verify", {
+  //     method: "POST",
+  //     body: JSON.stringify({ ticket, code }),
+  //   });
+
+  //   if (res?.token && res?.user) {
+  //     localStorage.setItem("speedway_token", res.token);
+  //     localStorage.setItem("speedway_user", JSON.stringify(res.user));
+  //     setUser(res.user);
+
+  //     // Rensa cache nu när vi blev “riktigt” inloggade
+  //     queryClient.clear();
+  //     setAuthVersion(v => v + 1);
+
+  //     return { ok: true, user: res.user };
+  //   }
+
+  //   throw new Error("Oväntat svar från servern vid 2FA-verifiering.");
+  // };
+
   const verify2FA = async (ticket, code) => {
     const res = await apiCall("/api/auth/2fa/verify", {
       method: "POST",
       body: JSON.stringify({ ticket, code }),
     });
-
     if (res?.token && res?.user) {
       localStorage.setItem("speedway_token", res.token);
       localStorage.setItem("speedway_user", JSON.stringify(res.user));
       setUser(res.user);
-
-      // Rensa cache nu när vi blev “riktigt” inloggade
-      queryClient.clear();
-      setAuthVersion(v => v + 1);
-
       return { ok: true, user: res.user };
     }
-
     throw new Error("Oväntat svar från servern vid 2FA-verifiering.");
   };
+
+  // const register = async (username, email, password) => {
+  //   const res = await apiCall("/api/auth/register", {
+  //     method: "POST",
+  //     body: JSON.stringify({ username, email, password }),
+  //   });
+
+  //   localStorage.setItem("speedway_token", res.token);
+  //   localStorage.setItem("speedway_user", JSON.stringify(res.user));
+  //   setUser(res.user);
+
+  //   queryClient.clear();
+  //   setAuthVersion(v => v + 1);
+
+  //   return res.user;
+  // };
 
   const register = async (username, email, password) => {
     const res = await apiCall("/api/auth/register", {
       method: "POST",
       body: JSON.stringify({ username, email, password }),
     });
-
     localStorage.setItem("speedway_token", res.token);
     localStorage.setItem("speedway_user", JSON.stringify(res.user));
     setUser(res.user);
-
-    queryClient.clear();
-    setAuthVersion(v => v + 1);
-
     return res.user;
   };
 
-  const logout = () => {
-    localStorage.removeItem("speedway_token");
-    localStorage.removeItem("speedway_user");
-    setUser(null);
+  // const logout = () => {
+  //   localStorage.removeItem("speedway_token");
+  //   localStorage.removeItem("speedway_user");
+  //   setUser(null);
 
-    // Viktigt: blås bort alla user-specifika queries
-    queryClient.clear();
-    setAuthVersion(v => v + 1);
+  //   // Viktigt: blås bort alla user-specifika queries
+  //   queryClient.clear();
+  //   setAuthVersion(v => v + 1);
+  // };
+
+  const logout = () => {
+    try {
+      localStorage.removeItem("speedway_token");
+      localStorage.removeItem("speedway_user");
+    } catch { }
+    // 🆕 Visa trevlig toast på /auth efter redirect
+    sessionStorage.setItem("auth_notice", "Du har loggats ut.");
+    setUser(null);
+    try { queryClient.clear(); } catch { }
+    // 🆕 Sänd samma event som vid 401 så allt beter sig lika
+    try {
+      window.dispatchEvent(new CustomEvent("auth:logout", { detail: { reason: "manual" } }));
+    } catch { }
   };
 
   return (

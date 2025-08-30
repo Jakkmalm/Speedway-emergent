@@ -203,41 +203,91 @@ export default function AuthPage() {
   const [code, setCode] = useState("");
   const [verifying, setVerifying] = useState(false);
 
+
+  // 🆕 Plocka upp och visa notice om man kom hit via tvångs-utloggning
+  useEffect(() => {
+    const note = sessionStorage.getItem("auth_notice");
+    if (note) {
+      toast.message("Utloggad", { description: note });
+      sessionStorage.removeItem("auth_notice");
+    }
+  }, []);
+
+
   useEffect(() => {
     // if (user) navigate(redirectTo, { replace: true });
     if (user) navigate("/dashboard", { replace: true });
-  // }, [user, redirectTo, navigate]);
+    // }, [user, redirectTo, navigate]);
   }, [user, navigate]);
 
+  // const doLogin = async (e) => {
+  //   e.preventDefault();
+  //   setLoading(true);
+  //   try {
+  //     const res = await login(loginForm.username, loginForm.password);
+
+  //     if (res?.twoFactorRequired) {
+  //       setNeeds2FA(true);
+  //       setTicket(res.ticket);
+  //       setDeviceLabel(res.deviceLabel || "Ny enhet");
+  //       toast.message("Tvåstegsverifiering", {
+  //         description: `Ange 6-siffrig kod för ny enhet: ${res.deviceLabel || "ny enhet"}.`,
+  //       });
+  //       return;
+  //     }
+
+  //     toast.success("Välkommen tillbaka!");
+  //     // navigate(redirectTo, { replace: true });
+  //     navigate("/account", { replace: true });
+  //   } catch (err) {
+  //     toast.error("Inloggning misslyckades", {
+  //       description: err?.message || "Något gick fel. Försök igen.",
+  //     });
+  //     console.error(err);
+  //   } finally {
+  //     setLoading(false);
+  //   }
+  // };
   const doLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
       const res = await login(loginForm.username, loginForm.password);
-
       if (res?.twoFactorRequired) {
         setNeeds2FA(true);
         setTicket(res.ticket);
         setDeviceLabel(res.deviceLabel || "Ny enhet");
         toast.message("Tvåstegsverifiering", {
-          description: `Ange 6-siffrig kod för ny enhet: ${res.deviceLabel || "ny enhet"}.`,
+          description: `Ange 6-siffrig kod för ${res.deviceLabel || "ny enhet"}.`,
         });
         return;
       }
-
       toast.success("Välkommen tillbaka!");
-      // navigate(redirectTo, { replace: true });
       navigate("/account", { replace: true });
     } catch (err) {
       toast.error("Inloggning misslyckades", {
         description: err?.message || "Något gick fel. Försök igen.",
       });
-      console.error(err);
     } finally {
       setLoading(false);
     }
   };
 
+  // const doVerify2FA = async (e) => {
+  //   e.preventDefault();
+  //   if (!ticket || code.length !== 6) return;
+  //   setVerifying(true);
+  //   try {
+  //     await verify2FA(ticket, code);
+  //     toast.success("Verifierad – inloggad");
+  //     // navigate(redirectTo, { replace: true });
+  //     navigate("/account", { replace: true });
+  //   } catch (err) {
+  //     toast.error("Felaktig kod", { description: err?.message || "Prova igen." });
+  //   } finally {
+  //     setVerifying(false);
+  //   }
+  // };
   const doVerify2FA = async (e) => {
     e.preventDefault();
     if (!ticket || code.length !== 6) return;
@@ -245,8 +295,7 @@ export default function AuthPage() {
     try {
       await verify2FA(ticket, code);
       toast.success("Verifierad – inloggad");
-      // navigate(redirectTo, { replace: true });
-      navigate("/account", { replace: true });
+      navigate("/account", { replace: true }); // ✅ fixat stavfel och target
     } catch (err) {
       toast.error("Felaktig kod", { description: err?.message || "Prova igen." });
     } finally {
@@ -254,12 +303,27 @@ export default function AuthPage() {
     }
   };
 
+  // const doRegister = async (e) => {
+  //   e.preventDefault();
+  //   setLoading(true);
+  //   try {
+  //     await register(registerForm.username, registerForm.email, registerForm.password);
+  //     // navigate(redirectTo, { replace: true });
+  //     navigate("/account", { replace: true });
+  //     toast.success("Konto skapat!");
+  //   } catch (err) {
+  //     toast.error("Registrering misslyckades", {
+  //       description: err?.message || "Något gick fel. Försök igen.",
+  //     });
+  //   } finally {
+  //     setLoading(false);
+  //   }
+  // };
   const doRegister = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
       await register(registerForm.username, registerForm.email, registerForm.password);
-      // navigate(redirectTo, { replace: true });
       navigate("/account", { replace: true });
       toast.success("Konto skapat!");
     } catch (err) {
